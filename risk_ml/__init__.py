@@ -35,6 +35,18 @@ from .experiment import (
     LiftMetric,
     DEFAULT_METRICS,
 )
+from .report import (
+    ReportOperator,
+    ReportContext,
+    PipelineAttributes,
+    ExcelWriter,
+    FormatConfig,
+    ModelReport,
+    ScoreLiftOperator,
+    FeatureFilterSummaryOperator,
+    ModelEffectOperator,
+    SwapInOutOperator,
+)
 
 __all__ = [
     "RiskTransformer",
@@ -59,4 +71,15 @@ __all__ = [
     "KSMetric",
     "LiftMetric",
     "DEFAULT_METRICS",
+    # report
+    "ReportOperator",
+    "ReportContext",
+    "PipelineAttributes",
+    "ExcelWriter",
+    "FormatConfig",
+    "ModelReport",
+    "ScoreLiftOperator",
+    "FeatureFilterSummaryOperator",
+    "ModelEffectOperator",
+    "SwapInOutOperator",
 ]
