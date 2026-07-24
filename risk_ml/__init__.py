@@ -35,18 +35,21 @@ from .experiment import (
     LiftMetric,
     DEFAULT_METRICS,
 )
-from .report import (
-    ReportOperator,
-    ReportContext,
-    PipelineAttributes,
-    ExcelWriter,
-    FormatConfig,
-    ModelReport,
-    ScoreLiftOperator,
-    FeatureFilterSummaryOperator,
-    ModelEffectOperator,
-    SwapInOutOperator,
-)
+# 兼容性重导出: report 已迁移为独立包 risk_report
+# 推荐直接使用 from risk_report import ...; 此重导出将在未来版本移除
+# 使用 __getattr__ 懒加载避免循环导入
+_REPORT_NAMES = {
+    "ReportOperator", "ReportContext", "PipelineAttributes",
+    "ExcelWriter", "FormatConfig", "ModelReport",
+    "ScoreLiftOperator", "FeatureFilterSummaryOperator",
+    "ModelEffectOperator", "SwapInOutOperator",
+}
+
+def __getattr__(name):
+    if name in _REPORT_NAMES:
+        import risk_report as _rp
+        return getattr(_rp, name)
+    raise AttributeError(f"module 'risk_ml' has no attribute '{name}'")
 
 __all__ = [
     "RiskTransformer",

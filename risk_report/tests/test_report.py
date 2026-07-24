@@ -1,4 +1,4 @@
-"""risk_ml.report 模块单元测试。"""
+"""risk_report 模块单元测试。"""
 
 import numpy as np
 import pandas as pd
@@ -6,7 +6,7 @@ import pytest
 import tempfile
 import os
 
-from risk_ml.report import (
+from risk_report import (
     ReportContext, PipelineAttributes, ModelReport, ExcelWriter,
     ScoreLiftOperator, FeatureFilterSummaryOperator,
     ModelEffectOperator, SwapInOutOperator,

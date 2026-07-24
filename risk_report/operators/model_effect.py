@@ -69,7 +69,7 @@ class ModelEffectOperator(ReportOperator):
         pd.DataFrame
             模型效果表
         """
-        from ...experiment.metrics import DEFAULT_METRICS, LiftMetric
+        from risk_ml.experiment.metrics import DEFAULT_METRICS, LiftMetric
 
         if metrics is None:
             metrics = list(DEFAULT_METRICS)

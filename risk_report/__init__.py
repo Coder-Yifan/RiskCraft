@@ -1,4 +1,4 @@
-"""risk_ml.report — 模型报告自动产出模块。
+"""risk_report — 模型报告自动产出模块。
 
 三种使用模式:
 1. 日常单独调用: ScoreLiftOperator.compute_lift_table(y_true, y_score)

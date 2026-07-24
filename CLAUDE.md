@@ -4,6 +4,7 @@
 RiskCraft 是一个风险建模与特征工程框架，包含两大子项目：
 - **feature_derivative** — 多端兼容的特征衍生框架（Pandas/PySpark/Dict）
 - **risk_ml** — sklearn 兼容的风控建模 ML 框架（清洗/分箱/WOE/筛选/Pipeline）
+- **risk_report** — 模型报告自动产出模块（从 risk_ml.report 迁移为独立包）
 
 ## 代码风格
 - Python 3.12，类型注解，中文注释
@@ -37,6 +38,17 @@ RiskCraft/
 │   ├── estimator/          # 估计器（RiskXGBClassifier / OptunaTuner）
 │   ├── dataset/            # 数据集加载器（LendingClubLoader）
 │   └── tests/              # 测试套件
+├── risk_report/            # 模型报告自动产出模块（独立包）
+│   ├── __init__.py         # 公共 API
+│   ├── _base.py            # 基类：ReportOperator / SubSection / ReportSectionResult
+│   ├── _context.py         # 报告上下文：ReportContext / PipelineAttributes
+│   ├── _excel.py           # Excel 写入器
+│   ├── _format.py          # 格式配置
+│   ├── _scoring.py         # 计算工具（lift/swap/ks/stats）
+│   ├── report.py           # 组合器：ModelReport
+│   ├── operators/          # 算子模块（11 算子）
+│   ├── tests/              # 测试套件
+│   └── demo_report.py      # 演示脚本
 ├── tests/                  # feature_derivative 测试
 ├── demo.py                 # 演示脚本
 └── requirements.txt        # 依赖

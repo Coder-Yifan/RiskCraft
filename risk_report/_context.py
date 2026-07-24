@@ -6,7 +6,7 @@ from typing import Any
 import numpy as np
 import pandas as pd
 
-from ..experiment.metrics import BaseMetric, DEFAULT_METRICS
+from risk_ml.experiment.metrics import BaseMetric, DEFAULT_METRICS
 
 
 @dataclass

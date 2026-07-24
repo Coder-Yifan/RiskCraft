@@ -122,7 +122,7 @@ if hasattr(iv_sel, "iv_values_"):
 # ============================================================
 print("\n[4] 构造 ReportContext ...")
 
-from risk_ml.report import ReportContext
+from risk_report import ReportContext
 
 # 特征元信息
 feature_meta = {
@@ -175,14 +175,14 @@ print(f"  y_score_oot shape: {context.y_score_oot.shape if context.y_score_oot i
 # ============================================================
 print("\n[5] 产出完整模型开发文档 Excel ...")
 
-from risk_ml.report import ModelReport
+from risk_report import ModelReport
 
 report = ModelReport()
 report.fit(context)
 
 print(f"  生成 sections: {list(report.results_.keys())}")
 
-output_path = "risk_ml/report/demo_report_output.xlsx"
+output_path = "risk_report/demo_report_output.xlsx"
 report.to_excel(output_path)
 print(f"  ✓ Excel 已保存: {output_path}")
 
@@ -200,7 +200,7 @@ for name in wb.sheetnames:
 # 6. 快速查看各数据集指标
 # ============================================================
 print("\n[6] 各数据集模型效果:")
-from risk_ml.report import ModelEffectOperator
+from risk_report import ModelEffectOperator
 
 datasets = {}
 if context.y_train is not None and context.y_score_train is not None:
@@ -214,5 +214,5 @@ effect_df = ModelEffectOperator.compute_effect_table(datasets)
 print(effect_df.to_string(index=False))
 
 print("\n" + "=" * 60)
-print("演示完成! 报告文件: risk_ml/report/demo_report_output.xlsx")
+print("演示完成! 报告文件: risk_report/demo_report_output.xlsx")
 print("=" * 60)
