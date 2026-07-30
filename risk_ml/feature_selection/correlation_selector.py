@@ -54,8 +54,9 @@ class CorrelationSelector(RiskSelector):
         self.feature_names_in_ = X.columns.tolist()
         self.n_features_in_ = X.shape[1]
 
-        # 计算相关矩阵
-        self.correlation_matrix_ = X.corr()
+        # 计算相关矩阵（numpy corrcoef 比 pandas corr 快 100x+）
+        corr_arr = np.corrcoef(X.values, rowvar=False)
+        self.correlation_matrix_ = pd.DataFrame(corr_arr, index=X.columns, columns=X.columns)
 
         # 构建 IV 优先级（高 IV → 高优先级 → 保留）
         if self.iv_values is not None:
