@@ -12,7 +12,7 @@ from ._base import ReportOperator, SubSection, placeholder_df
 from ._context import ReportContext, PipelineAttributes, extract_pipeline_attributes, TAG_CN_MAP
 from ._config import SheetConfig, DocumentConfig
 from ._format import FormatConfig, DEFAULT_FORMAT
-from ._scoring import compute_lift_table, compute_swap_analysis, compute_per_feature_ks, compute_sample_stats, compute_iv_from_data
+from ._scoring import compute_lift_table, compute_swap_analysis, compute_per_feature_ks, compute_sample_stats, compute_iv_from_data, compute_correlation_matrix, compute_high_corr_pairs
 from ._templates import DEFAULT_DOCUMENT_CONFIG
 from ._excel import ExcelWriter
 from .report import ModelReport
@@ -51,7 +51,7 @@ __all__ = [
     # 格式
     "FormatConfig", "DEFAULT_FORMAT",
     # 计算工具
-    "compute_lift_table", "compute_swap_analysis", "compute_per_feature_ks", "compute_sample_stats", "compute_iv_from_data",
+    "compute_lift_table", "compute_swap_analysis", "compute_per_feature_ks", "compute_sample_stats", "compute_iv_from_data", "compute_correlation_matrix", "compute_high_corr_pairs",
     # 模板
     "DEFAULT_DOCUMENT_CONFIG",
     # Excel 写入

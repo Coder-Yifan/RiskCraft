@@ -364,8 +364,14 @@ def compute_iv_from_data(
     total_pos = float(y_arr.sum())
     total_neg = float(len(y_arr) - total_pos)
 
-    # 优先使用 numba 加速
+    # 优先使用 numba 加速（首次调用时触发 JIT 编译）
     if _NUMBA_AVAILABLE:
+        global _NUMBA_WARMED_UP
+        if not _NUMBA_WARMED_UP:
+            _warmup_X = np.array([[0.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
+            _warmup_y = np.array([0.0, 1.0, 0.0])
+            _iv_all_cols(_warmup_X, _warmup_y, 1.0, 2.0, 0.001)
+            _NUMBA_WARMED_UP = True
         iv_arr = _iv_all_cols(X_arr, y_arr, total_pos, total_neg, eps)
     else:
         iv_arr = _iv_bincount(X_arr, y_arr, total_pos, total_neg, eps)
@@ -451,13 +457,8 @@ try:
             result[j] = _iv_single_col(X_arr[:, j], y_arr, total_pos, total_neg, eps)
         return result
 
-    # 触发 JIT 编译（小数据）
-    _warmup_X = np.array([[0.0, 1.0], [1.0, 0.0], [0.0, 1.0]])
-    _warmup_y = np.array([0.0, 1.0, 0.0])
-    _iv_all_cols(_warmup_X, _warmup_y, 1.0, 2.0, 0.001)
-    del _warmup_X, _warmup_y
-
     _NUMBA_AVAILABLE = True
+    _NUMBA_WARMED_UP = False
 
 except ImportError:
     _NUMBA_AVAILABLE = False
@@ -495,5 +496,86 @@ def _iv_bincount(X_arr: np.ndarray, y_arr: np.ndarray,
         dist_neg = (neg_per_group + eps) / (total_neg + eps * n_groups)
         woe = np.log(dist_pos / dist_neg)
         result[j] = float(np.sum((dist_pos - dist_neg) * woe))
+
+    return result
+
+
+# ============================================================
+# 相关性计算: 采样 + numpy 高性能
+# ============================================================
+
+def compute_correlation_matrix(
+    X: pd.DataFrame,
+    max_samples: int = 10000,
+    method: str = "pearson",
+) -> pd.DataFrame:
+    """计算特征间相关矩阵（高性能，采样 + numpy）。
+
+    当样本数 > max_samples 时自动随机采样，保证相关性估计精度。
+    10000 行的 Pearson 相关系数标准误 ≈ 1/√10000 = 0.01，
+    足以可靠识别 >0.7 的高相关对。
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        特征数据
+    max_samples : int
+        最大计算样本量，超过时随机采样。默认 10000。
+        设为 0 或 None 禁用采样。
+    method : str
+        相关性计算方法，目前仅支持 "pearson"。
+
+    Returns
+    -------
+    pd.DataFrame
+        特征间相关矩阵，行列索引为特征名
+    """
+    # 采样
+    if max_samples and len(X) > max_samples:
+        X_compute = X.sample(n=max_samples, random_state=42)
+    else:
+        X_compute = X
+
+    # numpy corrcoef（比 pandas corr 快 100x+）
+    corr_arr = np.corrcoef(X_compute.values, rowvar=False)
+
+    return pd.DataFrame(corr_arr, index=X.columns, columns=X.columns)
+
+
+def compute_high_corr_pairs(
+    X: pd.DataFrame,
+    threshold: float = 0.7,
+    max_samples: int = 10000,
+) -> list[tuple[str, str, float]]:
+    """识别高相关特征对（高性能，采样 + numpy + 向量化）。
+
+    Parameters
+    ----------
+    X : pd.DataFrame
+        特征数据
+    threshold : float
+        相关系数绝对值阈值，默认 0.7
+    max_samples : int
+        最大计算样本量，默认 10000
+
+    Returns
+    -------
+    list[tuple[str, str, float]]
+        高相关特征对列表，每项为 (特征A, 特征B, 相关系数)
+    """
+    corr_df = compute_correlation_matrix(X, max_samples=max_samples)
+    corr_arr = np.abs(corr_df.values)
+    n = len(corr_df.columns)
+    cols = corr_df.columns.tolist()
+
+    # 向量化: 一次性找到所有超阈值的位置
+    # 只取上三角（避免重复）
+    mask = np.triu(np.ones((n, n), dtype=bool), k=1)
+    high_corr_mask = (corr_arr > threshold) & mask
+
+    rows, cols_idx = np.where(high_corr_mask)
+    result = []
+    for r, c in zip(rows, cols_idx):
+        result.append((cols[r], cols[c], float(corr_arr[r, c])))
 
     return result
