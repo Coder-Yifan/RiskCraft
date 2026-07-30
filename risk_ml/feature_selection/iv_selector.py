@@ -52,40 +52,16 @@ class IVSelector(RiskSelector):
         Returns:
             self
         """
+        from risk_report._scoring import compute_iv_from_data
+
         X = validate_dataframe(X)
         if y is None:
             raise ValueError("IVSelector 需要目标变量 y")
-        y = pd.Series(y, index=X.index)
 
         self.feature_names_in_ = X.columns.tolist()
         self.n_features_in_ = X.shape[1]
 
-        total_pos = float(y.sum())
-        total_neg = float(len(y) - y.sum())
-
-        iv_dict = {}
-        for col in X.columns:
-            col_data = X[col]
-            iv = 0.0
-
-            # 尝试按唯一值分组计算 IV
-            groups = col_data.dropna().unique()
-            n_groups = len(groups)
-
-            for val in groups:
-                mask = col_data == val
-                n_pos = float(y[mask].sum())
-                n_neg = float(mask.sum() - n_pos)
-
-                dist_pos = (n_pos + self.eps) / (total_pos + self.eps * n_groups)
-                dist_neg = (n_neg + self.eps) / (total_neg + self.eps * n_groups)
-
-                woe = np.log(dist_pos / dist_neg)
-                iv += (dist_pos - dist_neg) * woe
-
-            iv_dict[col] = iv
-
-        self.iv_values_ = pd.Series(iv_dict, index=X.columns)
+        self.iv_values_ = compute_iv_from_data(X, y, eps=self.eps)
         return self
 
     def _get_support_mask(self):

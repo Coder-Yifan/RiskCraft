@@ -52,6 +52,8 @@ class WoeEncoder(RiskTransformer):
         Returns:
             self
         """
+        from risk_report._scoring import compute_iv_from_data
+
         X = validate_dataframe(X)
         if y is None:
             raise ValueError("WoeEncoder 需要目标变量 y")
@@ -65,14 +67,11 @@ class WoeEncoder(RiskTransformer):
         self.n_features_in_ = X.shape[1]
 
         self.woe_map_ = {}
-        self.iv_values_ = {}
-
         total_pos = float(y.sum())
         total_neg = float(len(y) - y.sum())
 
         for col in X.columns:
             col_woe = {}
-            col_iv = 0.0
             bin_indices = sorted(X[col].dropna().unique())
 
             for bin_idx in bin_indices:
@@ -86,10 +85,12 @@ class WoeEncoder(RiskTransformer):
 
                 woe = np.log(dist_pos / dist_neg)
                 col_woe[bin_idx] = woe
-                col_iv += (dist_pos - dist_neg) * woe
 
             self.woe_map_[col] = col_woe
-            self.iv_values_[col] = col_iv
+
+        # IV 使用统一算法计算
+        iv_series = compute_iv_from_data(X, y, eps=self.eps)
+        self.iv_values_ = iv_series.to_dict()
 
         return self
 

@@ -2,9 +2,11 @@
 实验模块演示 — 使用 demo_data.csv 交易数据
 
 实验设计：
-1. 不同时间窗口：2024年 vs 2025年 vs 全量
-2. 不同样本权重：等权 vs 高风险商户加权
-3. 对比 Optuna 调参后的模型表现
+1. 训练集 vs OOT（最近3个月跨时间验证）
+2. 不同时间窗口：2024年 vs 2025年
+3. 不同样本权重：等权 vs 高风险商户加权
+4. 多标签评估：is_fraud + is_high_risk
+5. OOT 指标驱动 best 选举
 
 运行方式：
     python risk_ml/dataset/demo_experiment.py
@@ -25,7 +27,7 @@ import numpy as np
 import pandas as pd
 from sklearn.pipeline import Pipeline
 
-from risk_ml import FeatureCleaner, RiskXGBClassifier
+from risk_ml import FeatureCleaner, RiskXGBClassifier, RiskPipeline
 from risk_ml.experiment import (
     ExperimentRunner,
     ExperimentConfig,
@@ -57,20 +59,32 @@ class GiniMetric(BaseMetric):
 
 
 # ============================================================
-# 2. 加载数据
+# 2. 加载与切分数据
 # ============================================================
 print("=" * 70)
-print("[1] 加载数据")
+print("[1] 加载与切分数据")
 print("=" * 70)
 
 df = pd.read_csv("risk_ml/dataset/demo_data.csv")
-print(f"原始数据: {df.shape[0]} 行, {df.shape[1]} 列")
-print(f"欺诈率: {df['is_fraud'].mean():.4f} ({df['is_fraud'].sum()} 笔欺诈)")
-print(f"时间范围: {df['transaction_time'].min()} ~ {df['transaction_time'].max()}")
+df["transaction_time"] = pd.to_datetime(df["transaction_time"])
 
-# 采样 10% 加速演示（全量数据跑完需要较长时间）
-df = df.sample(frac=0.1, random_state=42).reset_index(drop=True)
-print(f"采样后: {df.shape[0]} 行, 欺诈率: {df['is_fraud'].mean():.4f}")
+print(f"原始数据: {df.shape[0]:,} 行, {df.shape[1]} 列")
+print(f"欺诈率:   {df['is_fraud'].mean():.4f} ({df['is_fraud'].sum():,} 笔欺诈)")
+print(f"时间范围: {df['transaction_time'].min().date()} ~ {df['transaction_time'].max().date()}")
+
+# 切分：最近3个月为 OOT，其余为训练集
+oot_cutoff = df["transaction_time"].max() - pd.DateOffset(months=3)
+df_train = df[df["transaction_time"] < oot_cutoff].copy()
+df_oot = df[df["transaction_time"] >= oot_cutoff].copy()
+
+print(f"\nOOT 切分点: {oot_cutoff.date()}")
+print(f"训练集: {len(df_train):,} 行, 欺诈率 {df_train['is_fraud'].mean():.4f}")
+print(f"OOT集:  {len(df_oot):,} 行, 欺诈率 {df_oot['is_fraud'].mean():.4f}")
+
+# 采样 10% 加速演示
+df_train = df_train.sample(frac=0.1, random_state=42).reset_index(drop=True)
+df_oot = df_oot.sample(frac=0.1, random_state=42).reset_index(drop=True)
+print(f"\n采样后 — 训练: {len(df_train):,} 行, OOT: {len(df_oot):,} 行")
 
 # ============================================================
 # 3. 特征工程
@@ -79,21 +93,20 @@ print("\n" + "=" * 70)
 print("[2] 特征工程")
 print("=" * 70)
 
-# 解析时间列
-df["transaction_time"] = pd.to_datetime(df["transaction_time"])
-
 # 构造样本权重：高风险商户权重更高
 weight_map = {"High": 3.0, "Medium": 1.5, "Low": 1.0}
-df["risk_weight"] = df["merchant_risk_level"].map(weight_map).fillna(1.0)
+df_train["risk_weight"] = df_train["merchant_risk_level"].map(weight_map).fillna(1.0)
+df_oot["risk_weight"] = df_oot["merchant_risk_level"].map(weight_map).fillna(1.0)
 
 # 构造第二个标签：高风险交易（risk_score >= 70 且欺诈）
-df["is_high_risk"] = ((df["risk_score"] >= 70) & (df["is_fraud"] == 1)).astype(int)
+df_train["is_high_risk"] = ((df_train["risk_score"] >= 70) & (df_train["is_fraud"] == 1)).astype(int)
+df_oot["is_high_risk"] = ((df_oot["risk_score"] >= 70) & (df_oot["is_fraud"] == 1)).astype(int)
 
-print(f"is_fraud 分布: {dict(df['is_fraud'].value_counts())}")
-print(f"is_high_risk 分布: {dict(df['is_high_risk'].value_counts())}")
-print(f"risk_weight 分布: {dict(df['risk_weight'].value_counts())}")
+print(f"is_fraud 训练: {dict(df_train['is_fraud'].value_counts())}")
+print(f"is_fraud OOT:  {dict(df_oot['is_fraud'].value_counts())}")
+print(f"is_high_risk 训练: {dict(df_train['is_high_risk'].value_counts())}")
+print(f"is_high_risk OOT:  {dict(df_oot['is_high_risk'].value_counts())}")
 
-# 选取数值型特征列
 feature_cols = [
     "transaction_amount",
     "card_present",
@@ -107,54 +120,47 @@ feature_cols = [
     "account_tenure_years",
 ]
 print(f"特征数: {len(feature_cols)}")
-print(f"特征列: {feature_cols}")
 
 # ============================================================
-# 4. 定义实验配置
+# 4. 实验配置
 # ============================================================
 print("\n" + "=" * 70)
 print("[3] 实验配置")
 print("=" * 70)
 
-# 时间窗口
 tw_2024 = TimeWindow("transaction_time", "2024-01-01", "2024-12-31")
 tw_2025 = TimeWindow("transaction_time", "2025-01-01", "2025-12-31")
 
-# 手动定义实验配置
 configs = [
-    # 基线实验：全量数据，等权
-    ExperimentConfig(name="baseline_full", label_col="is_fraud"),
+    # 基线：全量训练数据，等权
+    ExperimentConfig(name="baseline", label_col="is_fraud"),
     # 2024 年窗口
-    ExperimentConfig(name="2024_equal", label_col="is_fraud", time_window=tw_2024),
+    ExperimentConfig(name="2024", label_col="is_fraud", time_window=tw_2024),
     # 2025 年窗口
-    ExperimentConfig(name="2025_equal", label_col="is_fraud", time_window=tw_2025),
+    ExperimentConfig(name="2025", label_col="is_fraud", time_window=tw_2025),
     # 高风险商户加权
     ExperimentConfig(
-        name="2024_weighted", label_col="is_fraud",
-        time_window=tw_2024, weight_col="risk_weight",
-    ),
-    # 不同标签定义：高风险交易
-    ExperimentConfig(
-        name="2025_high_risk", label_col="is_high_risk", time_window=tw_2025,
+        name="2025_weighted", label_col="is_fraud",
+        time_window=tw_2025, weight_col="risk_weight",
     ),
 ]
 
 for c in configs:
     parts = [f"  {c.name}: label={c.label_col}"]
     if c.time_window:
-        parts.append(f"time={c.time_window}")
+        parts.append(f"window={c.time_window}")
     if c.weight_col:
         parts.append(f"weight={c.weight_col}")
     print(", ".join(parts))
 
 # ============================================================
-# 5. 构建 Pipeline & 运行实验
+# 5. 运行实验（OOT holdout 调参 + 多标签评估）
 # ============================================================
 print("\n" + "=" * 70)
-print("[4] 运行实验（Optuna 自动调参）")
+print("[4] 运行实验（RiskPipeline + OOT holdout 调参 + 多标签评估）")
 print("=" * 70)
 
-pipe = Pipeline([
+pipe = RiskPipeline([
     ("cleaner", FeatureCleaner()),
     ("classifier", RiskXGBClassifier(n_estimators=50)),
 ])
@@ -167,54 +173,95 @@ runner = ExperimentRunner(
     feature_columns=feature_cols,
     metrics=metrics,
     scoring="ks",
-    n_trials=10,      # 演示用 10 轮，实际建议 30-50
+    n_trials=10,
     tuner_cv=3,
+    oot=df_oot,                             # OOT 跨时间验证
+    eval_label_cols=["is_high_risk"],        # 多标签评估
     n_jobs=1,
     random_state=42,
     verbose=1,
 )
 
-runner.fit(df)
+runner.fit(df_train)
 
 # ============================================================
 # 6. 展示结果
 # ============================================================
 print("\n" + "=" * 70)
-print("[5] 实验对比结果")
+print("[5] 训练集 vs OOT 对比结果")
 print("=" * 70)
 
-# 格式化输出
-results = runner.results_[
-    ["name", "label_col", "time_window", "weight_col", "status",
-     "n_samples", "default_rate", "n_features",
-     "auc", "ks", "lift_10", "gini",
-     "best_trial_score", "training_time"]
-].copy()
+# 选择关键列
+display_cols = [
+    "name", "label_col", "time_window", "weight_col",
+    "n_samples", "default_rate",
+    "auc", "ks", "lift_10", "gini",
+    "oot_n_samples", "oot_default_rate",
+    "oot_auc", "oot_ks", "oot_lift_10", "oot_gini",
+    "is_high_risk_auc", "is_high_risk_ks",
+    "oot_is_high_risk_auc", "oot_is_high_risk_ks",
+    "training_time",
+]
+# 只展示存在的列
+avail_cols = [c for c in display_cols if c in runner.results_.columns]
 
-# 格式化浮点数
-for col in ["default_rate", "auc", "ks", "lift_10", "gini", "best_trial_score", "training_time"]:
-    results[col] = results[col].apply(lambda x: f"{x:.4f}" if pd.notna(x) else "N/A")
-results["n_samples"] = results["n_samples"].apply(lambda x: f"{x:,}")
+results = runner.results_[avail_cols].copy()
+
+# 格式化
+float_cols = [c for c in results.columns if c not in
+              ["name", "label_col", "time_window", "weight_col"]]
+for col in float_cols:
+    results[col] = results[col].apply(
+        lambda x: f"{x:.4f}" if pd.notna(x) and isinstance(x, (int, float)) else (
+            f"{x:,}" if isinstance(x, (int, np.integer)) else x
+        )
+    )
+# 单独格式化 n_samples
+for col in ["n_samples", "oot_n_samples"]:
+    if col in results.columns:
+        results[col] = results[col].apply(
+            lambda x: f"{int(float(x.replace(',', ''))):,}" if isinstance(x, str) else f"{x:,}"
+        )
 
 print(results.to_string(index=False))
 
 # ============================================================
-# 7. 最优实验
+# 7. 训练集 vs OOT 指标衰减分析
 # ============================================================
 print("\n" + "=" * 70)
-print("[6] 最优实验")
+print("[6] 训练集 → OOT 指标衰减分析")
 print("=" * 70)
 
-print(f"实验名: {runner.best_config_.name}")
-print(f"标签列: {runner.best_config_.label_col}")
-print(f"KS 值:  {runner.best_score_:.4f}")
+for _, row in runner.results_.iterrows():
+    name = row["name"]
+    train_ks = row.get("ks", np.nan)
+    oot_ks = row.get("oot_ks", np.nan)
+    train_auc = row.get("auc", np.nan)
+    oot_auc = row.get("oot_auc", np.nan)
 
-# 最优模型的前 10 笔预测
-print("\n最优模型前 10 笔预测示例:")
-X_sample = df[feature_cols].head(10)
-scores = runner.predict_score(X_sample)
+    if pd.notna(train_ks) and pd.notna(oot_ks):
+        ks_decay = (train_ks - oot_ks) / train_ks * 100
+        auc_decay = (train_auc - oot_auc) / train_auc * 100
+        print(f"  {name:20s}  KS: {train_ks:.4f} → {oot_ks:.4f} (衰减 {ks_decay:+.1f}%)  "
+              f"AUC: {train_auc:.4f} → {oot_auc:.4f} (衰减 {auc_decay:+.1f}%)")
+
+# ============================================================
+# 8. 最优实验（基于 OOT KS）
+# ============================================================
+print("\n" + "=" * 70)
+print("[7] 最优实验（基于 OOT KS 选举）")
+print("=" * 70)
+
+print(f"实验名:  {runner.best_config_.name}")
+print(f"标签列:  {runner.best_config_.label_col}")
+print(f"OOT KS:  {runner.best_score_:.4f}")
+
+# 最优模型在 OOT 上的预测示例
+print("\n最优模型 OOT 前 10 笔预测示例:")
+X_oot_sample = df_oot[feature_cols].head(10)
+scores = runner.predict_score(X_oot_sample)
 for i, s in enumerate(scores):
-    label = "欺诈" if df["is_fraud"].iloc[i] == 1 else "正常"
+    label = "欺诈" if df_oot["is_fraud"].iloc[i] == 1 else "正常"
     print(f"  样本{i+1}: 预测概率={s:.4f}, 实际={label}")
 
 print("\n" + "=" * 70)

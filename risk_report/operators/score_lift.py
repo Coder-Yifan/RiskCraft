@@ -1,29 +1,28 @@
-"""ScoreLiftOperator — 模型分分箱表现（最常用的独立算子）。"""
+"""ScoreLift 算子 — 模型分分箱表现（不含灰样本）。
+
+每个数据集（训练集/测试集/跨时间验证集）各产出一个 SubSection，
+全量数据集按月拆分产出月度 SubSection。
+"""
 
 import numpy as np
 
-from .._base import ReportOperator, ReportSectionResult, SubSection
-from .._context import ReportContext
+from .._base import ReportOperator, SubSection, placeholder_df
 from .._scoring import compute_lift_table
 
 
 class ScoreLiftOperator(ReportOperator):
-    """模型分分箱表现算子。
+    """模型分分箱表现（不含灰样本）。
 
-    日常监控最常用: 可通过 compute() + context 或
-    静态方法 compute_lift_table() 直接调用。
+    每个数据集产出一个 SubSection，全量数据集按月拆分产出月度 SubSection。
 
     Parameters
     ----------
     n_bins : int
         分箱数量，默认 10
-    score_name : str
-        分数名称标签，默认 "score"
     """
 
-    def __init__(self, n_bins: int = 10, score_name: str = "score"):
+    def __init__(self, n_bins: int = 10):
         self.n_bins = n_bins
-        self.score_name = score_name
 
     @property
     def name(self) -> str:
@@ -31,64 +30,39 @@ class ScoreLiftOperator(ReportOperator):
 
     @property
     def title(self) -> str:
-        return "模型分分箱表现"
+        return "3.模型分分箱表现（不含灰样本）"
 
-    def compute(self, context: ReportContext) -> ReportSectionResult:
-        """运行算子，产出模型分分箱表现表。"""
-        sub_sections = []
+    def compute(self, context) -> list[SubSection]:
+        datasets = context.get_datasets()
+        if not datasets:
+            return [SubSection(self.title, placeholder_df(
+                "数据集未提供，请通过 ReportContext.data + tag_col + label_col + score_col 传入"
+            ))]
 
-        # 训练集
-        if context.y_train is not None and context.y_score_train is not None:
-            y_true = np.asarray(context.y_train)
-            y_score = np.asarray(context.y_score_train)
-            baseline = context.baseline_scores.get("train") if context.baseline_scores else None
-            df = compute_lift_table(y_true, y_score, self.n_bins, baseline)
-            sub_sections.append(SubSection(title="TRAIN", data=df))
+        subs = []
 
-        # 测试集
-        if context.y_test is not None and context.y_score_test is not None:
-            y_true = np.asarray(context.y_test)
-            y_score = np.asarray(context.y_score_test)
-            baseline = context.baseline_scores.get("test") if context.baseline_scores else None
-            df = compute_lift_table(y_true, y_score, self.n_bins, baseline)
-            sub_sections.append(SubSection(title="TEST", data=df))
+        # 1. 整体分箱
+        for cn_name, (y_true, y_score) in datasets.items():
+            mask = y_true >= 0
+            y_true_clean = y_true[mask]
+            y_score_clean = y_score[mask]
 
-        # OOT 验证集
-        if context.y_oot is not None and context.y_score_oot is not None:
-            y_true = np.asarray(context.y_oot)
-            y_score = np.asarray(context.y_score_oot)
-            baseline = context.baseline_scores.get("oot") if context.baseline_scores else None
-            df = compute_lift_table(y_true, y_score, self.n_bins, baseline)
-            sub_sections.append(SubSection(title="OOT", data=df))
+            df = compute_lift_table(y_true_clean, y_score_clean, self.n_bins)
+            subs.append(SubSection(title=cn_name, data=df))
 
-        return ReportSectionResult(
-            sheet_name=self.title,
-            sub_sections=sub_sections,
-        )
+        # 2. 月度拆分分箱（全量数据集都拆月）
+        monthly_datasets = context.get_monthly_datasets(tag_val=None)
+        for month_name, (y_true, y_score) in monthly_datasets.items():
+            mask = y_true >= 0
+            y_true_clean = y_true[mask]
+            y_score_clean = y_score[mask]
+
+            df = compute_lift_table(y_true_clean, y_score_clean, self.n_bins)
+            subs.append(SubSection(title=f"月度-{month_name}", data=df))
+
+        return subs
 
     @staticmethod
-    def compute_lift_table(
-        y_true,
-        y_score,
-        n_bins: int = 10,
-        baseline_score=None,
-    ):
-        """静态方法: 直接调用，无需构造 ReportContext。
-
-        Parameters
-        ----------
-        y_true : array-like
-            真实标签
-        y_score : array-like
-            模型分数
-        n_bins : int
-            分箱数
-        baseline_score : array-like | None
-            对标模型分数
-
-        Returns
-        -------
-        pd.DataFrame
-            分箱表现表
-        """
+    def compute_lift_table(y_true, y_score, n_bins=10, baseline_score=None):
+        """静态方法: 直接调用，无需构造 ReportContext。"""
         return compute_lift_table(y_true, y_score, n_bins, baseline_score)

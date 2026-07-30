@@ -17,6 +17,7 @@ sklearn 兼容的风险建模算子工具链，提供特征清洗、分箱、WOE
 """
 
 from ._base import RiskTransformer, RiskSelector
+from ._pipeline import RiskPipeline
 from .preprocessing import FeatureCleaner
 from .binning import ChiMergeBinner
 from .encoding import WoeEncoder, BinnerWoeEncoder
@@ -41,8 +42,9 @@ from .experiment import (
 _REPORT_NAMES = {
     "ReportOperator", "ReportContext", "PipelineAttributes",
     "ExcelWriter", "FormatConfig", "ModelReport",
-    "ScoreLiftOperator", "FeatureFilterSummaryOperator",
-    "ModelEffectOperator", "SwapInOutOperator",
+    "ScoreLiftOperator", "ModelEffectOperator", "SwapAnalysisOperator",
+    "SubSection", "SheetConfig", "DocumentConfig",
+    "DEFAULT_DOCUMENT_CONFIG", "placeholder_df",
 }
 
 def __getattr__(name):
@@ -52,6 +54,7 @@ def __getattr__(name):
     raise AttributeError(f"module 'risk_ml' has no attribute '{name}'")
 
 __all__ = [
+    "RiskPipeline",
     "RiskTransformer",
     "RiskSelector",
     "FeatureCleaner",
@@ -82,7 +85,10 @@ __all__ = [
     "FormatConfig",
     "ModelReport",
     "ScoreLiftOperator",
-    "FeatureFilterSummaryOperator",
     "ModelEffectOperator",
-    "SwapInOutOperator",
+    "SwapAnalysisOperator",
+    "SubSection",
+    "SheetConfig",
+    "DocumentConfig",
+    "DEFAULT_DOCUMENT_CONFIG",
 ]

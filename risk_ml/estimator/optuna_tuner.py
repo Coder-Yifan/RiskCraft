@@ -167,9 +167,13 @@ class OptunaTuner(BaseEstimator):
 
         return None
 
-    def fit(self, X, y, **fit_params):
+    def fit(self, X, y, X_val=None, y_val=None, **fit_params):
         """
         执行超参搜索并拟合最优模型。
+
+        支持两种评估模式：
+        - CV 模式（X_val=None）：使用 cross_val_score 交叉验证评估
+        - Holdout 模式（X_val/y_val 传入）：训练集 fit，验证集评分
 
         Parameters
         ----------
@@ -177,6 +181,10 @@ class OptunaTuner(BaseEstimator):
             训练特征。
         y : array-like
             目标变量（0/1 二分类）。
+        X_val : pandas DataFrame 或 array-like, default=None
+            验证集特征。传入后使用 holdout 评估替代 CV。
+        y_val : array-like, default=None
+            验证集标签。与 X_val 配合使用。
         **fit_params : dict
             传递给估计器 fit() 的额外参数（如 sample_weight）。
             对于 sklearn Pipeline，使用 ``{step_name}__sample_weight`` 格式。
@@ -210,40 +218,69 @@ class OptunaTuner(BaseEstimator):
             pruner=pruner,
         )
 
-        # 提取 fit_params 中的参数，分离为 CV params 和 fit params
-        # cross_val_score 的 fit_params 需要 params 格式
-        cv_fit_params = fit_params
+        # --- Holdout 模式：验证集直接评估 ---
+        if X_val is not None and y_val is not None:
+            # 记录评估模式
+            self._eval_mode = "holdout"
 
-        def _objective(trial):
-            # 采样参数
-            params = self._suggest_params(trial, search_space)
-            # 构建估计器
-            est = clone(self.estimator).set_params(**params)
-            # 交叉验证评分（传递 fit_params 给每个 fold）
-            scores = cross_val_score(
-                est, X, y,
-                scoring=scorer,
-                cv=self.cv,
-                n_jobs=self.n_jobs,
-                params=cv_fit_params,
+            def _objective(trial):
+                params = self._suggest_params(trial, search_space)
+                est = clone(self.estimator).set_params(**params)
+                # 训练集 fit
+                est.fit(X, y, **fit_params)
+                # 验证集评分
+                return scorer(est, X_val, y_val)
+
+            study.optimize(
+                _objective,
+                n_trials=self.n_trials,
+                show_progress_bar=self.verbose >= 1,
             )
-            return scores.mean()
 
-        study.optimize(
-            _objective,
-            n_trials=self.n_trials,
-            show_progress_bar=self.verbose >= 1,
-        )
+            # 记录搜索结果
+            self.best_params_ = study.best_params
+            self.best_score_ = study.best_value
+            self.study_ = study
+            self.trials_dataframe_ = study.trials_dataframe()
 
-        # 记录搜索结果
-        self.best_params_ = study.best_params
-        self.best_score_ = study.best_value
-        self.study_ = study
-        self.trials_dataframe_ = study.trials_dataframe()
+            # 用最优参数在全部训练数据上重新训练
+            self.best_estimator_ = clone(self.estimator).set_params(**self.best_params_)
+            self.best_estimator_.fit(X, y, **fit_params)
 
-        # 用最优参数在全部数据上重新训练
-        self.best_estimator_ = clone(self.estimator).set_params(**self.best_params_)
-        self.best_estimator_.fit(X, y, **fit_params)
+        # --- CV 模式：交叉验证评估（原逻辑） ---
+        else:
+            # 记录评估模式
+            self._eval_mode = "cv"
+
+            cv_fit_params = fit_params
+
+            def _objective(trial):
+                params = self._suggest_params(trial, search_space)
+                est = clone(self.estimator).set_params(**params)
+                scores = cross_val_score(
+                    est, X, y,
+                    scoring=scorer,
+                    cv=self.cv,
+                    n_jobs=self.n_jobs,
+                    params=cv_fit_params,
+                )
+                return scores.mean()
+
+            study.optimize(
+                _objective,
+                n_trials=self.n_trials,
+                show_progress_bar=self.verbose >= 1,
+            )
+
+            # 记录搜索结果
+            self.best_params_ = study.best_params
+            self.best_score_ = study.best_value
+            self.study_ = study
+            self.trials_dataframe_ = study.trials_dataframe()
+
+            # 用最优参数在全部数据上重新训练
+            self.best_estimator_ = clone(self.estimator).set_params(**self.best_params_)
+            self.best_estimator_.fit(X, y, **fit_params)
 
         return self
 

@@ -1,9 +1,10 @@
 # RiskCraft
 
-风险建模与特征工程框架，包含两大子项目：
+风险建模与特征工程框架，包含三大子项目：
 
 - **feature_derivative** — 多端兼容的特征衍生框架（Pandas / PySpark / Dict）
 - **risk_ml** — sklearn 兼容的风控建模 ML 框架（清洗 / 分箱 / WOE / 筛选 / 估计器 / 实验对比）
+- **risk_report** — 模型报告自动产出模块（22 算子 / 8 Sheet / 配置驱动）
 
 ## 快速开始
 
@@ -173,6 +174,88 @@ runner = ExperimentRunner(
 
 ---
 
+## risk_report — 模型报告自动产出模块
+
+从已拟合的 Pipeline + 单 DataFrame 自动产出标准模型开发报告（8 Sheet / 22 算子），配置驱动、可扩展。
+
+### 三种使用模式
+
+```python
+from risk_report import (
+    ModelReport, ReportContext, ExcelWriter,
+    ScoreLiftOperator, compute_lift_table,
+    DEFAULT_DOCUMENT_CONFIG, DocumentConfig, SheetConfig,
+)
+
+# 1. 日常单独调用（无需构造 ReportContext）
+df = ScoreLiftOperator.compute_lift_table(y_true, y_score, n_bins=10)
+
+# 2. 模块化组装（自定义配置）
+config = DocumentConfig(sheets=[
+    SheetConfig("模型表现", [ScoreLiftOperator(), ModelEffectOperator()]),
+])
+report = ModelReport(config=config).fit(context).to_excel("report.xlsx")
+
+# 3. 全量报告（默认 8 Sheet / 22 算子）
+context = ReportContext(
+    data=df, tag_col="tag", label_col="is_fraud",
+    pipeline=fitted_pipeline, time_col="transaction_time",
+)
+ModelReport().fit(context).to_excel("report.xlsx")
+```
+
+### 数据输入
+
+单 DataFrame + tag_col + label_col，替代传统 X_train/y_train/X_test/... 六数组：
+
+```python
+context = ReportContext(
+    data=df,                  # 包含 tag/label/score 的完整 DataFrame
+    tag_col="tag",            # 区分 train/test/oot
+    label_col="is_fraud",     # 主标签列
+    pipeline=pipe,            # 已拟合流水线（自动提取属性和预测分数）
+    score_col="score",        # 模型分数列（可由 pipeline 自动计算）
+    baseline_score_col="baseline_score",  # 对标模型分数列
+    time_col="transaction_time",          # 时间列（月度拆分分析）
+    extra_labels=["y_mob3", "y_mob6"],    # 多标签列（MOB 压测）
+)
+```
+
+### 22 算子一览
+
+| Sheet | 算子 | 说明 |
+|-------|------|------|
+| 模型说明 | MetaInfo | 模型元信息 |
+| 1.模型设计 | DevPurpose / ModelAssumption / LabelDefinition / SampleSelection / ModelingSample / EffectSummary | 模型设计文档 |
+| 2.变量分析 | VarDescription / VarCleaning / VarFilter / VarAnalysis | 变量描述、清洗、筛选、IV/KS/Gain分析 |
+| 附件-变量分箱 | VarBinning | 逐变量分箱 WOE 明细表 |
+| 3.模型表现 | ModelMethod / ModelEffect / ScoreLift / ScoreLiftGray | 模型方法、指标表、分箱表现、含灰分箱 |
+| 附件1-补充分析 | Attribution / ModelComparison / MobPerformance / Portrait | 归因、模型对比、MOB压测、画像 |
+| 附件2-模型使用方案 | SwapAnalysis | 切分点分析 |
+| 附件3-变量描述 | VarRange | 变量取值范围 |
+
+### Excel 美化
+
+- 微软雅黑字体 + 交替行色
+- 百分比列自动格式化（`xx.xx%`）
+- lift/bad_rate 等列条件格式数据条
+- 表头深蓝背景 + 白色加粗
+- 仅变量分析和变量描述 Sheet 冻结表头
+
+### IV 计算性能优化
+
+IV 计算核心函数 `compute_iv_from_data()` 采用 numba JIT + 并行加速：
+
+| 方案 | 100列×50K行 | 200列×100K行 |
+|---|---|---|
+| numba parallel | 0.066s | 0.299s |
+| numpy bincount（fallback） | 0.306s | 1.227s |
+| 原始 Python | >60s | >120s |
+
+numba 不可用时自动降级到 bincount 方案，跨平台兼容（Windows/Linux/macOS）。
+
+---
+
 ## 项目结构
 
 ```
@@ -186,6 +269,7 @@ RiskCraft/
 │   └── context.py               # 上下文类（自动引擎识别）
 ├── risk_ml/                     # 风控建模框架
 │   ├── _base.py                 # 基类：RiskTransformer / RiskSelector
+│   ├── _pipeline.py             # RiskPipeline（sklearn Pipeline 子类）
 │   ├── _config.py               # 项目配置（缺失值哨兵值）
 │   ├── preprocessing/           # 特征清洗（FeatureCleaner）
 │   ├── binning/                 # 分箱（BaseBinner / ChiMergeBinner）
@@ -199,6 +283,19 @@ RiskCraft/
 │   │   ├── experiment_runner.py # ExperimentRunner 主类
 │   │   └── experiment_grid.py   # make_experiment_grid 笛卡尔积生成
 │   └── tests/                   # 测试套件
+├── risk_report/                 # 模型报告自动产出模块
+│   ├── __init__.py              # 公共 API（22 算子 + 配置类 + 上下文类）
+│   ├── _base.py                 # 基类：ReportOperator / SubSection / placeholder_df
+│   ├── _context.py              # 报告上下文：ReportContext / PipelineAttributes
+│   ├── _excel.py                # Excel 写入器（美化 + 数据条 + 交替行色）
+│   ├── _format.py               # 格式配置：FormatConfig / DEFAULT_FORMAT
+│   ├── _scoring.py              # 计算工具（lift/swap/ks/stats/iv + numba加速）
+│   ├── _config.py               # SheetConfig / DocumentConfig
+│   ├── _templates.py            # DEFAULT_DOCUMENT_CONFIG（8 Sheet / 22 算子）
+│   ├── report.py                # 组合器：ModelReport
+│   ├── operators/               # 22 算子模块
+│   ├── tests/                   # 测试套件
+│   └── demo_full_pipeline.py    # 全流程演示脚本
 ├── tests/                       # feature_derivative 测试
 ├── demo.py                      # 特征衍生演示
 ├── requirements.txt             # 依赖
@@ -208,19 +305,23 @@ RiskCraft/
 ## 运行环境
 
 - Python 3.12+
-- 核心依赖：numpy / pandas / scikit-learn / xgboost / scipy / optuna
+- 核心依赖：numpy / pandas / scikit-learn / xgboost / scipy / optuna / openpyxl
+- 可选加速：numba（IV 计算并行加速，200 列 × 10 万行 < 0.5s）
 
 ## 运行测试
 
 ```bash
 # 全量测试
-pytest tests/ risk_ml/tests/ -v
+pytest tests/ risk_ml/tests/ risk_report/tests/ -v
 
 # 仅风控建模测试
 pytest risk_ml/tests/ -v
 
 # 仅特征衍生测试
 pytest tests/ -v
+
+# 仅报告模块测试
+pytest risk_report/tests/ -v
 ```
 
 ## 运行演示
@@ -231,4 +332,40 @@ python demo.py
 
 # 实验模块演示（使用 demo_data.csv）
 python risk_ml/dataset/demo_experiment.py
+
+# 全流程报告演示（数据划分 → Pipeline训练 → 报告产出）
+python risk_report/demo_full_pipeline.py
 ```
+
+---
+
+## 更新日志
+
+### v0.3.0 — risk_report 报告模块 + IV 性能优化
+
+- **新增 risk_report 独立顶层包**：22 算子 / 8 Sheet 配置驱动报告，从 risk_ml.report 迁移为独立包
+- **单 DataFrame 输入**：`ReportContext(data, tag_col, label_col)` 替代传统六数组
+- **全流程 Demo**：`demo_full_pipeline.py` — 数据划分 → Pipeline 训练 → 报告产出
+- **月度拆分分析**：model_effect / score_lift 算子支持全量数据集按月拆分
+- **IV 统一算法**：`compute_iv_from_data()` 单入口，BinnerWoeEncoder / IVSelector / 自动计算数值一致
+- **IV 自动兜底**：Pipeline 无 WOE/IV 步骤时自动从 data 计算 IV
+- **IV 性能优化**：numba JIT + 并行加速，200 列 × 10 万行 < 0.3s（原 >120s）
+- **Excel 美化**：微软雅黑字体、交替行色、百分比格式化、数据条、选择性冻结表头
+- **样本选择自动计算**：开发样本分布自动从 context.data 计算，原始样本分布提供简化版
+- **移除 baseline 对比**：model_effect / score_lift 算子移除 baseline 对标列
+
+### v0.2.0 — risk_ml 实验模块
+
+- 新增 ExperimentRunner：多配置实验对比 + OOT 验证 + 多标签评估
+- 新增 TimeWindow / ExperimentConfig / ExperimentResult 配置体系
+- 新增 BaseMetric 指标体系：AUC / KS / Lift 可扩展
+- 新增 make_experiment_grid 笛卡尔积配置生成
+- 新增 RiskPipeline（sklearn Pipeline 子类）
+
+### v0.1.0 — 初始版本
+
+- feature_derivative 多端兼容特征衍生框架（Pandas / PySpark / Dict）
+- risk_ml sklearn 兼容风控建模框架（清洗 / 分箱 / WOE / 筛选 / 估计器）
+- ChiMergeBinner 卡方分箱
+- BinnerWoeEncoder 分箱 + WOE 联合算子
+- OptunaTuner 贝叶斯调参

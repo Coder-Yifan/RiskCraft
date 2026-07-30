@@ -28,3 +28,8 @@ Thumbs.db
 # Env
 .env
 *.log
+risk_ml/dataset/demo.py
+risk_ml/dataset/demo_data.csv
+
+# 产出的 Excel 报告
+*.xlsx

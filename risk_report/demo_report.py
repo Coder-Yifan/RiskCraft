@@ -2,10 +2,10 @@
 
 演示流程:
 1. 加载 demo_data.csv
-2. 按 transaction_time 划分 train(2024前)/test(2024上半年)/oot(2024下半年起)
+2. 按 transaction_time 划分 train/test/oot，写入 tag 列
 3. 构建风控建模 Pipeline 并训练
-4. 构造 ReportContext
-5. 产出完整模型开发文档 Excel
+4. 构造 ReportContext（单 DataFrame + tag_col + label_col）
+5. 产出完整模型开发文档 Excel（8 Sheet / 22 算子）
 """
 
 import sys
@@ -31,9 +31,9 @@ df["transaction_time"] = pd.to_datetime(df["transaction_time"])
 print(f"  时间范围: {df['transaction_time'].min()} ~ {df['transaction_time'].max()}")
 
 # ============================================================
-# 2. 划分数据集
+# 2. 划分数据集 — 写入 tag 列
 # ============================================================
-print("\n[2] 按时间划分 train / test / OOT ...")
+print("\n[2] 按时间划分 train / test / OOT → 写入 tag 列 ...")
 
 # 特征列: 排除 ID/时间/标签 和高基数类别列
 exclude_cols = [
@@ -43,26 +43,19 @@ exclude_cols = [
 ]
 feature_cols = [c for c in df.columns if c not in exclude_cols]
 print(f"  原始特征数: {len(df.columns) - len(exclude_cols)} → {len(feature_cols)}")
-print(f"  特征列表: {feature_cols}")
 
-# 时间划分
-# train: 2023年10月 ~ 2023年12月 (早期数据,建模用)
-# test:  2024年1月 ~ 2024年6月 (近期数据,测试用)
-# oot:   2024年7月 ~ 2026年6月 (跨时间验证)
+# 时间划分 → 写入 tag 列
 train_mask = df["transaction_time"] < "2024-01-01"
 test_mask = (df["transaction_time"] >= "2024-01-01") & (df["transaction_time"] < "2024-07-01")
 oot_mask = df["transaction_time"] >= "2024-07-01"
 
-X_train = df.loc[train_mask, feature_cols].copy()
-y_train = df.loc[train_mask, "is_fraud"].values
-X_test = df.loc[test_mask, feature_cols].copy()
-y_test = df.loc[test_mask, "is_fraud"].values
-X_oot = df.loc[oot_mask, feature_cols].copy()
-y_oot = df.loc[oot_mask, "is_fraud"].values
+df["tag"] = "train"
+df.loc[test_mask, "tag"] = "test"
+df.loc[oot_mask, "tag"] = "oot"
 
-print(f"  train: {len(X_train)} 条, 欺诈率 {y_train.mean():.4f}")
-print(f"  test:  {len(X_test)} 条, 欺诈率 {y_test.mean():.4f}")
-print(f"  oot:   {len(X_oot)} 条, 欺诈率 {y_oot.mean():.4f}")
+print(f"  train: {(df['tag']=='train').sum()} 条, 欺诈率 {df.loc[df['tag']=='train', 'is_fraud'].mean():.4f}")
+print(f"  test:  {(df['tag']=='test').sum()} 条, 欺诈率 {df.loc[df['tag']=='test', 'is_fraud'].mean():.4f}")
+print(f"  oot:   {(df['tag']=='oot').sum()} 条, 欺诈率 {df.loc[df['tag']=='oot', 'is_fraud'].mean():.4f}")
 
 # ============================================================
 # 3. 构建 Pipeline 并训练
@@ -75,9 +68,6 @@ from risk_ml.encoding import BinnerWoeEncoder
 from risk_ml.feature_selection import IVSelector, CorrelationSelector
 from risk_ml.estimator import RiskXGBClassifier, OptunaTuner
 
-# 使用 OptunaTuner(RiskXGBClassifier()) 作为分类器步骤
-# OptunaTuner 继承 BaseEstimator，完全兼容 sklearn Pipeline
-# fit 时自动调参: n_trials=20 次贝叶斯搜索，评估指标用 KS
 pipe = Pipeline([
     ("cleaner", FeatureCleaner()),
     ("binner_woe", BinnerWoeEncoder(max_bins=8)),
@@ -94,37 +84,23 @@ pipe = Pipeline([
 ])
 
 start = time.time()
+X_train = df.loc[df["tag"] == "train", feature_cols]
+y_train = df.loc[df["tag"] == "train", "is_fraud"].values
 pipe.fit(X_train, y_train)
 elapsed = time.time() - start
 print(f"  训练完成, 耗时 {elapsed:.1f}s")
 
-# OptunaTuner fit 后，最优参数和最优估计器
 tuner = pipe.named_steps["classifier"]
 print(f"  Optuna 最优参数: {tuner.best_params_}")
 print(f"  Optuna 最优 KS: {tuner.best_score_:.4f}")
 
-# 查看入模特征 — 从 best_estimator_ 获取
-best_est = tuner.best_estimator_
-final_features = best_est.feature_names_in_
-print(f"  入模特征数: {len(final_features)}")
-print(f"  入模特征: {list(final_features)}")
-
-# 查看关键属性
-bwe = pipe.named_steps["binner_woe"]
-iv_sel = pipe.named_steps["iv_selector"]
-print(f"\n  IV 值 (WOE编码后):")
-if hasattr(iv_sel, "iv_values_"):
-    for feat, iv in iv_sel.iv_values_.items():
-        print(f"    {feat}: IV={iv:.4f}")
-
 # ============================================================
-# 4. 构造 ReportContext
+# 4. 构造 ReportContext（单 DataFrame + tag_col + label_col）
 # ============================================================
-print("\n[4] 构造 ReportContext ...")
+print("\n[4] 构造 ReportContext（单 DataFrame + tag_col + label_col） ...")
 
 from risk_report import ReportContext
 
-# 特征元信息
 feature_meta = {
     "transaction_amount": {"含义": "交易金额", "来源": "交易系统", "类别": "数值"},
     "merchant_category": {"含义": "商户类别", "来源": "商户信息", "类别": "分类"},
@@ -148,30 +124,26 @@ feature_meta = {
 }
 
 context = ReportContext(
+    data=df,
+    tag_col="tag",
+    label_col="is_fraud",
+    pipeline=pipe,
     model_name="反欺诈模型_v1.0",
     developer="RiskCraft Demo",
     validator="风控团队",
     business_owner="业务运营部",
     background="针对线上交易欺诈风险，构建反欺诈预测模型，降低欺诈损失率",
     application="线上交易实时风控筛查，辅助人工审核决策",
-    pipeline=pipe,
-    X_train=X_train,
-    y_train=y_train,
-    X_test=X_test,
-    y_test=y_test,
-    X_oot=X_oot,
-    y_oot=y_oot,
     label_definition={0: "正常", 1: "欺诈"},
     feature_meta=feature_meta,
 )
 
 print(f"  pipeline_attrs.feature_names_in_: {context.pipeline_attrs.feature_names_in_}")
-print(f"  y_score_train shape: {context.y_score_train.shape}")
-print(f"  y_score_test shape: {context.y_score_test.shape if context.y_score_test is not None else 'None'}")
-print(f"  y_score_oot shape: {context.y_score_oot.shape if context.y_score_oot is not None else 'None'}")
+print(f"  score_col: {context.score_col}")
+print(f"  get_datasets(): {list(context.get_datasets().keys())}")
 
 # ============================================================
-# 5. 产出完整模型开发文档
+# 5. 产出完整模型开发文档（8 Sheet / 22 算子）
 # ============================================================
 print("\n[5] 产出完整模型开发文档 Excel ...")
 
@@ -180,7 +152,7 @@ from risk_report import ModelReport
 report = ModelReport()
 report.fit(context)
 
-print(f"  生成 sections: {list(report.results_.keys())}")
+print(f"  生成算子结果: {list(report.results_.keys())}")
 
 output_path = "risk_report/demo_report_output.xlsx"
 report.to_excel(output_path)
@@ -202,17 +174,28 @@ for name in wb.sheetnames:
 print("\n[6] 各数据集模型效果:")
 from risk_report import ModelEffectOperator
 
-datasets = {}
-if context.y_train is not None and context.y_score_train is not None:
-    datasets["训练集"] = (context.y_train, context.y_score_train)
-if context.y_test is not None and context.y_score_test is not None:
-    datasets["测试集"] = (context.y_test, context.y_score_test)
-if context.y_oot is not None and context.y_score_oot is not None:
-    datasets["OOT验证集"] = (context.y_oot, context.y_score_oot)
-
+datasets = context.get_datasets()
 effect_df = ModelEffectOperator.compute_effect_table(datasets)
 print(effect_df.to_string(index=False))
 
+# ============================================================
+# 7. 自定义配置示例
+# ============================================================
+print("\n[7] 自定义配置示例 — 只产出模型表现 sheet ...")
+from risk_report import SheetConfig, DocumentConfig, ScoreLiftOperator
+
+custom_config = DocumentConfig(sheets=[
+    SheetConfig("3.模型表现", [ModelMethodOperator(), ModelEffectOperator(), ScoreLiftOperator()]),
+])
+custom_report = ModelReport(config=custom_config)
+custom_report.fit(context)
+
+output_path2 = "risk_report/demo_report_custom.xlsx"
+custom_report.to_excel(output_path2)
+print(f"  ✓ 自定义 Excel 已保存: {output_path2}")
+
 print("\n" + "=" * 60)
-print("演示完成! 报告文件: risk_report/demo_report_output.xlsx")
+print("演示完成! 报告文件:")
+print("  - risk_report/demo_report_output.xlsx (全量)")
+print("  - risk_report/demo_report_custom.xlsx (自定义)")
 print("=" * 60)

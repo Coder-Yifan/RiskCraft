@@ -24,6 +24,7 @@ from risk_ml import (
     LendingClubLoader,
     RiskTransformer,
     RiskSelector,
+    RiskPipeline,
 )
 
 
@@ -1143,3 +1144,157 @@ class TestExperimentRunner:
         oot_rate = runner.results_.iloc[0]["oot_default_rate"]
         # OOT 样本数应 > 0
         assert runner.results_.iloc[0]["oot_n_samples"] > 0
+
+
+# ============================================================
+# RiskPipeline
+# ============================================================
+
+class TestRiskPipeline:
+    """RiskPipeline 测试：向后兼容、验证集数据流、属性传递、PSI"""
+
+    _FEAT_COLS = ["age", "income", "loan_amount", "education"]
+
+    @pytest.fixture
+    def pipeline_data(self):
+        """生成训练集和验证集数据"""
+        np.random.seed(42)
+        n_train = 400
+        n_val = 200
+        # 训练集
+        X_train = pd.DataFrame({
+            "age": np.random.normal(35, 10, n_train),
+            "income": np.random.lognormal(10, 1, n_train),
+            "loan_amount": np.random.exponential(50000, n_train),
+            "education": np.random.choice([0, 1, 2], n_train),
+        })
+        prob_train = 1 / (1 + np.exp(-(X_train["age"] - 35) / 10))
+        y_train = (prob_train > 0.5).astype(int).values
+        # 验证集（轻微偏移，使 PSI 有意义）
+        X_val = pd.DataFrame({
+            "age": np.random.normal(36, 10, n_val),
+            "income": np.random.lognormal(10.1, 1.1, n_val),
+            "loan_amount": np.random.exponential(52000, n_val),
+            "education": np.random.choice([0, 1, 2], n_val),
+        })
+        prob_val = 1 / (1 + np.exp(-(X_val["age"] - 35) / 10))
+        y_val = (prob_val > 0.5).astype(int).values
+        return X_train, y_train, X_val, y_val
+
+    def test_backward_compatible_no_val(self, pipeline_data):
+        """不传 X_val 时，行为与 sklearn Pipeline 完全一致"""
+        X_train, y_train, X_val, y_val = pipeline_data
+        from sklearn.pipeline import Pipeline
+
+        # 两条相同流水线
+        steps = [
+            ("cleaner", FeatureCleaner()),
+            ("classifier", RiskXGBClassifier(n_estimators=10)),
+        ]
+        pipe_sk = Pipeline(steps)
+        pipe_risk = RiskPipeline(steps)
+
+        pipe_sk.fit(X_train, y_train)
+        pipe_risk.fit(X_train, y_train)
+
+        # 验证预测一致
+        y_pred_sk = pipe_sk.predict_proba(X_val)[:, 1]
+        y_pred_risk = pipe_risk.predict_proba(X_val)[:, 1]
+        np.testing.assert_array_almost_equal(y_pred_sk, y_pred_risk)
+
+    def test_val_data_flow_stores_transformed(self, pipeline_data):
+        """传入 X_val 时，存储变换后的验证集数据"""
+        X_train, y_train, X_val, y_val = pipeline_data
+        pipe = RiskPipeline([
+            ("cleaner", FeatureCleaner()),
+            ("classifier", RiskXGBClassifier(n_estimators=10)),
+        ])
+        pipe.fit(X_train, y_train, X_val=X_val, y_val=y_val)
+
+        # 应有 X_val_transformed_ 和 y_val_ 属性
+        assert hasattr(pipe, "X_val_transformed_")
+        assert hasattr(pipe, "y_val_")
+        assert pipe.X_val_transformed_ is not None
+        assert pipe.y_val_ is not None
+
+    def test_attribute_routing_iv_to_corr(self, pipeline_data):
+        """step间属性传递：IVSelector.iv_values_ → CorrelationSelector.iv_values"""
+        X_train, y_train, X_val, y_val = pipeline_data
+
+        # CorrelationSelector(iv_values=None) 应自动获取 IVSelector 的 iv_values_
+        pipe = RiskPipeline([
+            ("cleaner", FeatureCleaner()),
+            ("binner_woe", BinnerWoeEncoder()),
+            ("iv_selector", IVSelector()),
+            ("corr_selector", CorrelationSelector(iv_values=None)),
+            ("classifier", RiskXGBClassifier(n_estimators=10)),
+        ])
+        pipe.fit(X_train, y_train)
+
+        # CorrelationSelector 应已获取 iv_values（不再为 None）
+        corr_step = pipe.named_steps["corr_selector"]
+        assert corr_step.iv_values is not None
+        # 应有 drop_features_ 属性（fit 成功）
+        assert hasattr(corr_step, "drop_features_")
+
+    def test_psi_with_val_real_psi(self, pipeline_data):
+        """PSISelector 在有验证集时计算真实 PSI（>0）"""
+        X_train, y_train, X_val, y_val = pipeline_data
+
+        # 注入显著分布偏移：验证集的 age 列整体偏移 +20
+        X_val_shifted = X_val.copy()
+        X_val_shifted["age"] = X_val_shifted["age"] + 20
+
+        # 简化 pipeline：cleaner → binner_woe → psi（放在 IV 之后也有意义，
+        # 但为了测试 PSI 的核心行为，放在前面以保留更多特征）
+        pipe = RiskPipeline([
+            ("cleaner", FeatureCleaner()),
+            ("binner_woe", BinnerWoeEncoder()),
+            ("psi_selector", PSISelector()),
+            ("classifier", RiskXGBClassifier(n_estimators=10)),
+        ])
+
+        # 不传验证集：PSI ≈ 0（train→train）
+        pipe_no_val = clone(pipe)
+        pipe_no_val.fit(X_train, y_train)
+        psi_no_val = pipe_no_val.named_steps["psi_selector"].psi_values_
+        # train→train PSI 应接近 0
+        assert (psi_no_val < 0.01).all()
+
+        # 传入验证集（含显著偏移）：PSI > 0（train→val）
+        pipe_with_val = clone(pipe)
+        pipe_with_val.fit(X_train, y_train, X_val=X_val_shifted, y_val=y_val)
+        psi_with_val = pipe_with_val.named_steps["psi_selector"].psi_values_
+        # train→val PSI 应 > 0（age 列偏移 +20，PSI 必然很大）
+        assert (psi_with_val > 0).any()
+
+    def test_optuna_tuner_holdout(self, pipeline_data):
+        """OptunaTuner holdout 评估：传入 X_val/y_val 时 _eval_mode='holdout'"""
+        X_train, y_train, X_val, y_val = pipeline_data
+        # Pipeline 搜索空间需要 step__ 前缀
+        from risk_ml.estimator.optuna_tuner import _DEFAULT_SEARCH_SPACE
+        search_space = {
+            f"classifier__{k}": v for k, v in _DEFAULT_SEARCH_SPACE.items()
+        }
+        pipe = RiskPipeline([
+            ("cleaner", FeatureCleaner()),
+            ("classifier", RiskXGBClassifier(n_estimators=10)),
+        ])
+        tuner = OptunaTuner(
+            estimator=pipe,
+            n_trials=3,
+            search_space=search_space,
+            scoring="roc_auc",
+            cv=3,
+            random_state=42,
+            verbose=0,
+        )
+        tuner.fit(X_train, y_train, X_val=X_val, y_val=y_val)
+
+        # holdout 模式标记
+        assert tuner._eval_mode == "holdout"
+        # best_score_ 应为验证集上的指标值
+        assert tuner.best_score_ > 0
+        # best_estimator_ 可正常预测
+        y_score = tuner.predict_score(X_val)
+        assert len(y_score) == len(y_val)

@@ -1,26 +1,22 @@
-"""ModelEffectOperator — 模型效果指标。"""
+"""ModelEffect 算子 — 2.模型效果。"""
 
 import numpy as np
 import pandas as pd
 
-from .._base import ReportOperator, ReportSectionResult, SubSection
-from .._context import ReportContext
+from .._base import ReportOperator, SubSection, placeholder_df
 from .._scoring import compute_sample_stats
 
 
 class ModelEffectOperator(ReportOperator):
-    """模型效果指标算子。
+    """模型效果 — 指标对比表（AUC/KS/Lift@10%/5%/2%/1%/PSI）。
 
-    展示各数据集的 AUC/KS/Lift 等指标。
-
-    Parameters
-    ----------
-    lift_percentiles : list[float]
-        Lift 百分位列表，默认 [10, 5, 2, 1]
+    产出两个 SubSection:
+    1. 整体指标表（训练集/测试集/跨时间验证集）
+    2. 月度拆分指标表（每个数据集按月拆分）
     """
 
-    def __init__(self, lift_percentiles: list[float] = [10, 5, 2, 1]):
-        self.lift_percentiles = lift_percentiles
+    def __init__(self, lift_percentiles: list[float] | None = None):
+        self.lift_percentiles = lift_percentiles or [10, 5, 2, 1]
 
     @property
     def name(self) -> str:
@@ -28,24 +24,28 @@ class ModelEffectOperator(ReportOperator):
 
     @property
     def title(self) -> str:
-        return "模型效果"
+        return "2.模型效果"
 
-    def compute(self, context: ReportContext) -> ReportSectionResult:
-        datasets = {}
+    def compute(self, context) -> list[SubSection]:
+        datasets = context.get_datasets()
+        if not datasets:
+            return [SubSection(self.title, placeholder_df(
+                "数据集未提供，请通过 ReportContext.data + tag_col + label_col + score_col 传入"
+            ))]
 
-        if context.y_train is not None and context.y_score_train is not None:
-            datasets["训练集"] = (np.asarray(context.y_train), np.asarray(context.y_score_train))
-        if context.y_test is not None and context.y_score_test is not None:
-            datasets["测试集"] = (np.asarray(context.y_test), np.asarray(context.y_score_test))
-        if context.y_oot is not None and context.y_score_oot is not None:
-            datasets["跨时间验证集"] = (np.asarray(context.y_oot), np.asarray(context.y_score_oot))
+        subs = []
 
+        # 1. 整体指标表
         df = self.compute_effect_table(datasets, context.metrics, self.lift_percentiles)
+        subs.append(SubSection(self.title, df))
 
-        return ReportSectionResult(
-            sheet_name=self.title,
-            sub_sections=[SubSection(title="2.模型效果", data=df)],
-        )
+        # 2. 月度拆分指标表（全量数据集都拆月）
+        monthly_all = context.get_monthly_datasets(tag_val=None)
+        if monthly_all:
+            df_monthly = self.compute_effect_table(monthly_all, context.metrics, self.lift_percentiles)
+            subs.append(SubSection("月度拆分", df_monthly))
+
+        return subs
 
     @staticmethod
     def compute_effect_table(
@@ -53,22 +53,7 @@ class ModelEffectOperator(ReportOperator):
         metrics: list | None = None,
         lift_percentiles: list[float] = [10, 5, 2, 1],
     ) -> pd.DataFrame:
-        """静态方法: 直接调用，无需构造 ReportContext。
-
-        Parameters
-        ----------
-        datasets : dict
-            {数据集名: (y_true, y_score)}
-        metrics : list[BaseMetric] | None
-            指标列表，默认 DEFAULT_METRICS
-        lift_percentiles : list[float]
-            Lift 百分位
-
-        Returns
-        -------
-        pd.DataFrame
-            模型效果表
-        """
+        """静态方法: 直接调用，无需构造 ReportContext。"""
         from risk_ml.experiment.metrics import DEFAULT_METRICS, LiftMetric
 
         if metrics is None:
@@ -89,7 +74,11 @@ class ModelEffectOperator(ReportOperator):
         for name, (y_true, y_score) in datasets.items():
             y_true = np.asarray(y_true)
             y_score = np.asarray(y_score)
-            stats = compute_sample_stats(y_true)
+            # 排除灰样本
+            mask = y_true >= 0
+            y_true_c = y_true[mask]
+            y_score_c = y_score[mask]
+            stats = compute_sample_stats(y_true_c)
             row = {
                 "数据集": name,
                 "好": stats["goods"],
@@ -99,9 +88,10 @@ class ModelEffectOperator(ReportOperator):
             }
             for m in all_metrics:
                 try:
-                    row[m.name] = m.compute(y_true, y_score)
+                    row[m.name] = m.compute(y_true_c, y_score_c)
                 except Exception:
                     row[m.name] = 0.0
+
             rows.append(row)
 
         return pd.DataFrame(rows)

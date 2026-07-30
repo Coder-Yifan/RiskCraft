@@ -1,14 +1,19 @@
-"""报告算子基类与数据模型。"""
+"""报告算子基类与数据模型。
+
+核心设计:
+- ReportOperator.compute() 返回 list[SubSection]，算子与 Sheet 解耦
+- SheetConfig 负责将算子结果分配到 sheet（在 _config.py 中定义）
+- 缺失数据时产出占位表 + 提示文字，保持模板结构完整
+"""
 
 from abc import ABC, abstractmethod
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from typing import TYPE_CHECKING
 
 import pandas as pd
 
 if TYPE_CHECKING:
     from ._context import ReportContext
-    from ._format import FormatConfig
 
 
 @dataclass
@@ -30,30 +35,29 @@ class SubSection:
     note: str = ""
 
 
-@dataclass
-class ReportSectionResult:
-    """报告章节结果: 对应一个 Excel sheet。
+def placeholder_df(msg: str) -> pd.DataFrame:
+    """生成占位表 — 缺失数据时保持模板结构完整。
 
     Parameters
     ----------
-    sheet_name : str
-        Excel sheet 名，如 "2.变量分析"
-    sub_sections : list[SubSection]
-        该 sheet 内的子章节列表
-    format_config : FormatConfig | None
-        格式化配置（可选，覆盖全局默认）
-    """
+    msg : str
+        提示文字，如 "标签定义数据未提供，请通过 ReportContext.label_col 传入"
 
-    sheet_name: str
-    sub_sections: list[SubSection] = field(default_factory=list)
-    format_config: "FormatConfig | None" = None
+    Returns
+    -------
+    pd.DataFrame
+        单行单列的占位表
+    """
+    return pd.DataFrame([{"说明": msg}])
 
 
 class ReportOperator(ABC):
     """报告算子基类。
 
     与 BaseMetric 模式类似: 定义 name + compute 接口，
-    但输出粒度为 DataFrame（而非 float）。
+    但输出粒度为 list[SubSection]（一个或多个 DataFrame）。
+    算子与 Sheet 解耦 — SheetConfig 决定算子结果归属哪个 sheet。
+
     不使用 fit/transform 周期，算子是一次性计算生产者。
     """
 
@@ -70,8 +74,8 @@ class ReportOperator(ABC):
         ...
 
     @abstractmethod
-    def compute(self, context: "ReportContext") -> ReportSectionResult:
-        """运行算子，产出报告章节结果。
+    def compute(self, context: "ReportContext") -> list[SubSection]:
+        """运行算子，产出子章节列表。
 
         Parameters
         ----------
@@ -80,7 +84,8 @@ class ReportOperator(ABC):
 
         Returns
         -------
-        ReportSectionResult
-            含 sheet_name 和 sub_sections 的结果对象
+        list[SubSection]
+            子章节列表。单 DataFrame 算子返回 1 个，
+            多 DataFrame 算子返回多个。
         """
         ...

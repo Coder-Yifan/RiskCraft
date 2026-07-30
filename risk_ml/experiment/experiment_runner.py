@@ -19,6 +19,7 @@ from sklearn.base import BaseEstimator, clone
 from sklearn.pipeline import Pipeline
 
 from .._base import validate_dataframe
+from .._pipeline import RiskPipeline
 from ..estimator.optuna_tuner import OptunaTuner
 from .experiment_config import ExperimentConfig, ExperimentResult, TimeWindow
 from .metrics import BaseMetric, DEFAULT_METRICS
@@ -272,7 +273,7 @@ class ExperimentRunner(BaseEstimator):
             if hasattr(last_step, param)  # 只包含该步骤实际支持的参数
         }
 
-    def _build_default_pipeline(self) -> Pipeline:
+    def _build_default_pipeline(self) -> RiskPipeline:
         """
         构建风控建模标准流水线。
 
@@ -284,7 +285,7 @@ class ExperimentRunner(BaseEstimator):
         from ..feature_selection import IVSelector, CorrelationSelector
         from ..estimator import RiskXGBClassifier
 
-        return Pipeline([
+        return RiskPipeline([
             ("cleaner", FeatureCleaner()),
             ("binner_woe", BinnerWoeEncoder()),
             ("iv_selector", IVSelector()),
@@ -376,6 +377,14 @@ class ExperimentRunner(BaseEstimator):
             # 4. 获取流水线并 clone
             pipe = clone(self._resolve_pipeline(config))
 
+            # 4.5 准备验证集数据（holdout 评估）
+            X_val_features = None
+            y_val_sub = None
+            if self.oot is not None:
+                X_val_features = self.oot[feature_columns]
+                if config.label_col in self.oot.columns:
+                    y_val_sub = self.oot[config.label_col].values
+
             # 5. 构造 OptunaTuner 并调参
             # Pipeline 需要 step__param 格式的搜索空间
             search_space = self._build_pipeline_search_space(pipe)
@@ -390,7 +399,12 @@ class ExperimentRunner(BaseEstimator):
                 random_state=self.random_state,
                 verbose=max(0, self.verbose - 1),  # 内层降一级日志
             )
-            tuner.fit(X_features, y_sub, **fit_kwargs)
+
+            # 有验证集时使用 holdout 评估，否则使用 CV
+            if X_val_features is not None and y_val_sub is not None:
+                tuner.fit(X_features, y_sub, X_val=X_val_features, y_val=y_val_sub, **fit_kwargs)
+            else:
+                tuner.fit(X_features, y_sub, **fit_kwargs)
 
             # 6. 获取最优估计器
             best_estimator = tuner.best_estimator_
