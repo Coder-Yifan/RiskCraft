@@ -74,6 +74,9 @@ class ExperimentConfig:
     weight_col : str | None, default=None
         样本权重列名。为 None 时等权训练。
         权重值将从输入 DataFrame 中提取并传递给估计器的 fit()。
+    feature_columns : list[str] | None, default=None
+        特征列名列表。为 None 时使用 ExperimentRunner 的 feature_columns。
+        指定后仅使用这些列作为训练特征，适用于比较不同特征组合的效果。
     pipeline : Any | None, default=None
         自定义流水线（sklearn Pipeline 或估计器实例）。
         为 None 时使用 ExperimentRunner 的默认流水线。
@@ -87,6 +90,7 @@ class ExperimentConfig:
     label_col: str
     time_window: TimeWindow | None = None
     weight_col: str | None = None
+    feature_columns: list[str] | None = None
     pipeline: Any | None = None
     fit_kwargs: dict | None = None
 

@@ -17,7 +17,7 @@
 
 from .experiment_config import TimeWindow, ExperimentConfig, ExperimentResult
 from .experiment_runner import ExperimentRunner
-from .experiment_grid import make_experiment_grid
+from .experiment_grid import make_experiment_grid, make_feature_grid
 from .metrics import BaseMetric, AUCMetric, KSMetric, LiftMetric, DEFAULT_METRICS
 
 __all__ = [
@@ -26,6 +26,7 @@ __all__ = [
     "ExperimentResult",
     "ExperimentRunner",
     "make_experiment_grid",
+    "make_feature_grid",
     "BaseMetric",
     "AUCMetric",
     "KSMetric",

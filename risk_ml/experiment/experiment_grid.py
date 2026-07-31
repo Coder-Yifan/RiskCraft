@@ -74,3 +74,62 @@ def make_experiment_grid(
         )
 
     return configs
+
+
+def make_feature_grid(
+    feature_groups: List[List[str]],
+    label_col: str,
+    time_window: TimeWindow | None = None,
+    weight_col: str | None = None,
+    name_prefix: str = "feat",
+) -> List[ExperimentConfig]:
+    """根据特征组合列表生成实验配置。
+
+    每组特征列名对应一个实验，适用于比较不同特征组合的建模效果。
+
+    Parameters
+    ----------
+    feature_groups : list[list[str]]
+        特征组合列表，每个子列表是一组特征列名。
+        如 [["x1","x2","x3"], ["x1","x2","x3","x4","x5"]]。
+    label_col : str
+        标签列名。
+    time_window : TimeWindow | None, default=None
+        时间窗口配置，所有实验共用。
+    weight_col : str | None, default=None
+        样本权重列名，所有实验共用。
+    name_prefix : str, default="feat"
+        实验名前缀，自动编号并附加特征数。
+
+    Returns
+    -------
+    list[ExperimentConfig]
+        每组特征对应一个实验配置。
+
+    Example
+    -------
+    >>> configs = make_feature_grid(
+    ...     feature_groups=[
+    ...         ["x1", "x2", "x3"],
+    ...         ["x1", "x2", "x3", "x4", "x5"],
+    ...     ],
+    ...     label_col="is_fraud",
+    ... )
+    >>> len(configs)
+    2
+    >>> configs[0].feature_columns
+    ['x1', 'x2', 'x3']
+    """
+    configs = []
+    for i, features in enumerate(feature_groups):
+        name = f"{name_prefix}_{i:03d}_{len(features)}feats"
+        configs.append(
+            ExperimentConfig(
+                name=name,
+                label_col=label_col,
+                time_window=time_window,
+                weight_col=weight_col,
+                feature_columns=features,
+            )
+        )
+    return configs

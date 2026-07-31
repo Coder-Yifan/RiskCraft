@@ -158,8 +158,8 @@ class ExperimentRunner(BaseEstimator):
         # 解析指标列表
         metrics = self.metrics if self.metrics is not None else DEFAULT_METRICS
 
-        # 解析特征列
-        feature_columns = self._resolve_feature_columns(X)
+        # 解析特征列（runner 级默认）
+        default_feature_columns = self._resolve_feature_columns(X)
 
         # 运行每个实验
         self.experiments_ = {}
@@ -170,6 +170,8 @@ class ExperimentRunner(BaseEstimator):
                     f"{config.name}"
                 )
 
+            # config 级 feature_columns 优先于 runner 级
+            feature_columns = config.feature_columns or default_feature_columns
             result = self._run_single(config, X, feature_columns, metrics)
             self.experiments_[config.name] = result
 
