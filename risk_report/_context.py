@@ -156,6 +156,20 @@ def extract_pipeline_attributes(pipeline: Any) -> PipelineAttributes:
                     attrs.weight_total_ = sum(importance_weight.values())
             except Exception:
                 pass
+        # RiskXGBClassifier: 重要性通过 feature_importance() 方法暴露
+        # （模型封装在 model_ 内，不直接暴露 feature_importances_ / booster_）
+        if hasattr(inner_step, "feature_importance"):
+            try:
+                gain = inner_step.feature_importance(importance_type="gain")
+                weight = inner_step.feature_importance(importance_type="weight")
+                if gain:
+                    attrs.feature_importance_gain_ = gain
+                    attrs.gain_total_ = sum(gain.values())
+                if weight:
+                    attrs.feature_importance_weight_ = weight
+                    attrs.weight_total_ = sum(weight.values())
+            except Exception:
+                pass
         if hasattr(inner_step, "feature_names_in_"):
             attrs.feature_names_in_ = list(inner_step.feature_names_in_)
             attrs.n_features_in_ = inner_step.n_features_in_
