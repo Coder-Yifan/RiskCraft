@@ -35,7 +35,8 @@ class ChiMergeBinner(BaseBinner):
         卡方检验的置信度，用于计算合并临界值。
     special_values : dict or None, default=None
         {col: [special_values]} 指定特殊值（如 -999 代表缺失），
-        特殊值将被强制放入独立箱。
+        特殊值将被强制放入独立箱（每个特殊值一箱），
+        不参与卡方合并，特殊箱不计入 max_bins 约束。
     categorical_features : list[str] or None, default=None
         分类特征列名列表，每列使用分类卡方分箱。
 
@@ -107,13 +108,14 @@ class ChiMergeBinner(BaseBinner):
 
         for col in X.columns:
             x_col = X[col].values
+            sp_vals = (self.special_values or {}).get(col, [])
             if col in cat_features:
-                edges, labels, cat_map = self._chi_merge_categorical(x_col, y.values)
+                edges, labels, cat_map = self._chi_merge_categorical(x_col, y.values, special_vals=sp_vals)
                 self._cat_maps_[col] = cat_map
             else:
                 # 强制转为 float，避免 object 类型的 isnan 报错
                 x_col = pd.to_numeric(x_col, errors="coerce").astype(float)
-                edges, labels = self._chi_merge_continuous(x_col, y.values)
+                edges, labels = self._chi_merge_continuous(x_col, y.values, special_vals=sp_vals)
                 cat_map = {}
             self.bin_edges_[col] = edges
             self.bin_labels_[col] = labels
@@ -132,9 +134,75 @@ class ChiMergeBinner(BaseBinner):
     # 连续特征卡方分箱
     # ------------------------------------------------------------------
 
-    def _chi_merge_continuous(self, x, y):
+    def _chi_merge_continuous(self, x, y, special_vals=None):
         """
         连续特征卡方分箱。
+
+        算法：
+        1. 特殊值（special_vals）从数据中分离，每个特殊值强制独立成箱
+        2. 常规值排序去重，每个唯一值为一个初始箱
+        3. 计算相邻箱的卡方值
+        4. 合并卡方值最小的相邻箱
+        5. 重复直到满足停止条件
+        6. 应用最小箱占比约束
+
+        特殊值处理：
+        - special_vals 中的值（如 -999 哨兵值）不参与卡方合并
+        - 每个特殊值一个独立箱，用"中点隔离法"在特殊值与其左右
+          相邻唯一值的中点处插入边界，从而用 pd.cut 边界唯一隔离该值
+        - 特殊箱不计入 max_bins / min_bins 约束
+        """
+        # 去除 NaN
+        mask = ~np.isnan(x)
+        x_clean = x[mask]
+        y_clean = y[mask]
+
+        if len(x_clean) == 0:
+            return np.array([-np.inf, np.inf]), ["(-inf, inf)"]
+
+        sp_vals = self._normalize_special_values(special_vals)
+        if not sp_vals:
+            # 无特殊值：直接走标准卡方分箱
+            return self._chi_merge_regular(x_clean, y_clean)
+
+        # 仅隔离数据中实际出现的特殊值（未出现的声明值不影响分箱）
+        sp_mask = np.isin(x_clean, sp_vals)
+        sp_present = sorted({float(v) for v in x_clean[sp_mask]})
+        if not sp_present:
+            return self._chi_merge_regular(x_clean, y_clean)
+
+        x_reg = x_clean[~sp_mask]
+        y_reg = y_clean[~sp_mask]
+
+        # --- 1. 常规值标准卡方分箱 ---
+        reg_inner = []
+        if len(x_reg) > 0:
+            reg_edges, _ = self._chi_merge_regular(x_reg, y_reg)
+            reg_inner = reg_edges[1:-1].tolist()  # 去掉两端 -inf/inf
+
+        # --- 2. 特殊值中点隔离 ---
+        # 边界 = 常规分箱内边界 ∪ 每个特殊值与其左右最近唯一值的中点
+        boundaries = set(reg_inner)
+        if len(x_reg) > 0:
+            unique_vals = np.unique(np.concatenate([np.asarray(sp_present), x_reg]))
+        else:
+            unique_vals = np.asarray(sp_present)
+        for v in sp_present:
+            below = unique_vals[unique_vals < v]
+            above = unique_vals[unique_vals > v]
+            if len(below) > 0:
+                boundaries.add((float(below[-1]) + v) / 2.0)
+            if len(above) > 0:
+                boundaries.add((v + float(above[0])) / 2.0)
+
+        # --- 3. 组装边界与标签（两端补 -inf / inf） ---
+        edges = np.concatenate([[-np.inf], sorted(boundaries), [np.inf]])
+        labels = self._edges_to_labels(edges)
+        return edges, labels
+
+    def _chi_merge_regular(self, x, y):
+        """
+        常规数据（不含特殊值）的标准卡方分箱。
 
         算法：
         1. 排序去重，每个唯一值为一个初始箱
@@ -183,6 +251,36 @@ class ChiMergeBinner(BaseBinner):
 
         # 生成边界和标签
         return self._bins_to_edges_labels(bins)
+
+    @staticmethod
+    def _normalize_special_values(special_vals):
+        """
+        规范化特殊值列表：去重、去 NaN/inf、升序排序。
+
+        无法转为数值的值（如非数值列误传字符串）直接忽略。
+        """
+        if not special_vals:
+            return []
+        try:
+            vals = np.asarray(special_vals, dtype=float)
+        except (TypeError, ValueError):
+            return []
+        vals = vals[np.isfinite(vals)]
+        return sorted(set(vals.tolist()))
+
+    def _edges_to_labels(self, edges):
+        """根据边界数组生成箱标签（与 _bins_to_edges_labels 格式一致）"""
+        labels = []
+        n = len(edges) - 1
+        for i in range(n):
+            lo, hi = edges[i], edges[i + 1]
+            if i == 0:
+                labels.append(f"(-inf, {hi:.4f}]")
+            elif i == n - 1:
+                labels.append(f"({lo:.4f}, inf)")
+            else:
+                labels.append(f"({lo:.4f}, {hi:.4f}]")
+        return labels
 
     def _build_bins_from_cutpoints(self, x, y, cut_points):
         """根据切分点构建箱的计数统计"""
@@ -324,7 +422,7 @@ class ChiMergeBinner(BaseBinner):
     # 分类特征卡方分箱
     # ------------------------------------------------------------------
 
-    def _chi_merge_categorical(self, x, y):
+    def _chi_merge_categorical(self, x, y, special_vals=None):
         """
         分类特征卡方分箱。
 
@@ -332,6 +430,11 @@ class ChiMergeBinner(BaseBinner):
         1. 计算每个类别的正样本率
         2. 按正样本率排序
         3. 对排序后的类别执行卡方合并（同连续特征逻辑）
+
+        Args:
+            x: 类别值数组
+            y: 目标值数组
+            special_vals: 特殊类别列表，强制独立成箱（映射为整数后交连续逻辑处理）
 
         Returns:
             edges, labels, cat_map
@@ -358,7 +461,10 @@ class ChiMergeBinner(BaseBinner):
         cat_map = {cat: i for i, cat in enumerate(sorted_cats)}
         x_mapped = x_clean.map(cat_map).values
 
-        # 对映射后的整数执行连续分箱
-        edges, labels = self._chi_merge_continuous(x_mapped, y_clean.values)
+        # 特殊类别映射为整数后，交连续逻辑强制独立箱
+        sp_mapped = [cat_map[c] for c in (special_vals or []) if c in cat_map]
+        edges, labels = self._chi_merge_continuous(
+            x_mapped, y_clean.values, special_vals=sp_mapped or None
+        )
 
         return edges, labels, cat_map

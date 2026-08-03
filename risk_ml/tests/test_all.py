@@ -230,6 +230,32 @@ class TestChiMergeBinner:
         cloned = clone(binner)
         assert cloned.max_bins == 8
 
+    def test_special_values_forced_independent_bins(self):
+        """特殊值应强制独立成箱，不参与卡方合并"""
+        X = pd.DataFrame({"a": [-999] * 5 + list(range(1, 31))})
+        y = pd.Series([0, 0, 1, 1, 1] + [i % 2 for i in range(1, 31)])
+        binner = ChiMergeBinner(max_bins=2, special_values={"a": [-999]})
+        binner.fit(X, y)
+        trans = binner.transform(X)
+        sp_bins = set(trans.loc[X["a"] == -999, "a"])
+        non_sp_bins = set(trans.loc[X["a"] != -999, "a"].dropna())
+        # 特殊值箱索引不与任何常规值箱重合
+        assert sp_bins & non_sp_bins == set()
+
+    def test_special_values_continuous_bin_edges(self):
+        """特殊值箱应体现在边界数组中，常规值分箱不受影响"""
+        X = pd.DataFrame({"a": [-999, -999, 1, 2, 3, 4, 5, 6, 7, 8]})
+        y = pd.Series([0, 1, 1, 1, 0, 1, 0, 1, 0, 1])
+        binner = ChiMergeBinner(max_bins=3, special_values={"a": [-999]})
+        binner.fit(X, y)
+        edges = binner.bin_edges_["a"]
+        labels = binner.bin_labels_["a"]
+        assert len(edges) == len(labels) + 1
+        # 端点应为 -inf/inf，内部边界必须有限且严格递增（pd.cut 要求）
+        assert edges[0] == -np.inf and edges[-1] == np.inf
+        assert np.isfinite(edges[1:-1]).all()
+        assert (np.diff(edges) > 0).all()
+
 
 # ============================================================
 # WoeEncoder

@@ -38,11 +38,9 @@ _SAFE_AST_NODES = {
     ast.Constant,    # 常量 (Python 3.8+)
 }
 
-# Python 3.7 兼容：ast.Num 在 3.8 中被 ast.Constant 取代（3.14 移除）
-try:
-    _SAFE_AST_NODES.add(ast.Num)  # type: ignore[attr-defined]
-except AttributeError:
-    pass
+# 注意：数字字面量在 Python 3.8+ 统一产生 ast.Constant 节点，
+# 旧版 ast.Num 已废弃并在 Python 3.14 中移除，无需（也无法）加入白名单。
+# 依赖 Python 3.12+ 环境，无需保留 ast.Num 兼容。
 
 
 def extract_variables(expression: str) -> List[str]:

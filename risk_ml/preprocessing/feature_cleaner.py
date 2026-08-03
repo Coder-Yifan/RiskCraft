@@ -168,10 +168,7 @@ class FeatureCleaner(RiskTransformer):
                     drop_cols.add(col)
             except TypeError:
                 # 某些数值列可能含混合类型，跳过
-                pass
                 continue
-            if X[col].var() <= self.variance_threshold:
-                drop_cols.add(col)
 
         self.drop_columns_ = sorted(drop_cols)
 
