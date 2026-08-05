@@ -34,3 +34,11 @@ xlrd==2.0.2
 # Performance Acceleration (optional)
 # ============================================================
 numba>=0.60.0
+
+# ============================================================
+# Model Deployment (online_deploy_proto)
+# ============================================================
+# proto 部署规格 runtime——executor（实时/Spark 打分）必需，本仓库已生成
+# deploy_spec_pb2.py，gencode major=6，要求相同 major 的 protobuf runtime
+protobuf>=6.31.1,<7
+# 可选：onnx / onnxruntime（onnx 后端打分用；m2cgen 后端零依赖，默认推荐）

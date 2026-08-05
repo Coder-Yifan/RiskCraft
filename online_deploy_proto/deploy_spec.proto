@@ -1,0 +1,124 @@
+// online_deploy_proto 部署规格 schema
+//
+// 版本演进契约（protobuf 特性）：
+// - 字段按编号（非名称）序列化，新增字段不影响旧版本读取（wire format 自动跳过）
+// - proto3 标量字段缺省返回默认值（0 / "" / 空列表），无显式 required
+// - 语义变更通过 min_scorer_version 显式门控：scorer 遇到未知 op/字段必须明确报错，
+//   绝不静默跳过（与 JSON 时代静默误打分的教训相反）
+//
+// 字段编号约定：>= 1 递增；废弃字段用 reserved 占位，绝不复用编号。
+
+syntax = "proto3";
+package riskcraft.deploy;
+
+// ---- 通用值容器 ----
+
+message Bounds {
+  double lower = 1;
+  double upper = 2;
+}
+
+message Edges {
+  repeated double edge = 1;
+}
+
+// cat 映射键 int/float 皆可能。proto map 不支持 double 键（wire 类型受限），
+// 故用 repeated 条目模拟双键类型映射。
+message CatEntry {
+  double key = 1;
+  int64 code = 2;
+}
+
+message CatEntries {
+  repeated CatEntry entry = 1;
+}
+
+// 分箱索引 → WOE 值（键仅 int，可用原生 map）
+message WoeMap {
+  map<int32, double> woe = 1;
+}
+
+enum OutlierAction {
+  OUTLIER_UNSPECIFIED = 0;
+  CLIP = 1;
+  SET_NAN = 2;
+}
+
+// ---- 算子 ----
+
+// 公共字段上提（name/columns），算子只留各自参数。
+message Op {
+  string name = 1;
+  repeated string input_columns = 2;
+  repeated string output_columns = 3;
+  oneof op {
+    CleanerOp cleaner = 4;
+    BinOp bin = 5;
+    WoeOp woe = 6;
+    BinWoeOp bin_woe = 7;
+    SelectOp select = 8;
+    RawOp raw = 9;  // 自定义算子逃生舱
+  }
+}
+
+message CleanerOp {
+  repeated double sentinels = 1;
+  map<string, double> impute_values = 2;
+  map<string, Bounds> clip_bounds = 3;  // ±inf 原生 double
+  OutlierAction outlier_action = 4;
+}
+
+message BinOp {
+  map<string, Edges> edges = 1;
+  map<string, CatEntries> cat_maps = 2;
+}
+
+message WoeOp {
+  map<string, WoeMap> woe_maps = 1;
+}
+
+message BinWoeOp {
+  map<string, Edges> edges = 1;
+  map<string, WoeMap> woe_maps = 2;
+  map<string, CatEntries> cat_maps = 3;
+}
+
+message SelectOp {}
+
+// 自定义算子逃生舱：params_json 语义（DeployOp.to_dict 的 JSON），
+// 保真由算子作者负责；scorer 侧通过 register_scorer_kernel 注册同名内核。
+message RawOp {
+  string kind = 1;
+  bytes params_json = 2;
+}
+
+// ---- 模型后端 ----
+
+message Model {
+  oneof backend {
+    OnnxModel onnx = 1;
+    M2CgenModel m2cgen = 2;
+  }
+}
+
+message OnnxModel {
+  repeated string feature_names = 1;
+  double base_score = 2;
+  bytes model_bytes = 3;  // 免 base64，比 JSON 省 ~33%
+}
+
+message M2CgenModel {
+  repeated string feature_names = 1;
+  double base_score = 2;
+  string code = 3;
+}
+
+// ---- 顶层 ----
+
+message DeploySpec {
+  int32 version = 1;  // 当前 = 1
+  repeated string feature_names_in = 2;
+  repeated Op ops = 3;
+  Model model = 4;
+  string min_scorer_version = 5;  // 语义化版本门控
+}

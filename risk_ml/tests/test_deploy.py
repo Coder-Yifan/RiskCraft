@@ -194,6 +194,30 @@ class TestSerializationTypeRecovery:
 
 
 # ============================================================
+# m2cgen 向量化量化（宽特征优化回归）
+# ============================================================
+
+class TestM2CgenVectorizedQuantization:
+    def test_numpy_quantize_matches_struct_f32(self):
+        """向量化 astype 舍入与逐元素 struct._f32 必须 bit 级一致。"""
+        from risk_ml.online_deploy._model_m2cgen import _f32
+        rng = np.random.default_rng(0)
+        X = rng.standard_normal((200, 300))
+        vec = np.asarray(X, dtype=np.float64).astype(np.float32).astype(np.float64)
+        manual = np.array([[_f32(v) for v in row] for row in X])
+        assert (vec == manual).all()
+
+    def test_generated_code_has_no_struct_quantization(self, trained):
+        """优化生效：生成代码不再含逐元素 struct 量化，直接取 input。"""
+        pipe, _, _ = trained
+        deploy = PipelineParser(backend="m2cgen").compile_pipeline(pipe)
+        code = deploy.model_op.code
+        assert "struct" not in code
+        assert "_f32" not in code
+        assert "input[" in code
+
+
+# ============================================================
 # 端到端：编译 / 一致性 / 打分
 # ============================================================
 
