@@ -609,3 +609,486 @@ class ExperimentRunner(BaseEstimator):
             raise RuntimeError(
                 "ExperimentRunner 尚未拟合，请先调用 fit() 方法"
             )
+
+    # ------------------------------------------------------------------
+    # show — Markdown 报告
+    # ------------------------------------------------------------------
+
+    def show(self, top_n_features: int = 10) -> str:
+        """
+        生成实验结果 Markdown 报告。
+
+        包含：实验概览、指标对比表、OOT 衰减分析、Top-N 特征重要性对比、
+        特征稳定性分析、超参数对比、最优实验详情。
+
+        Parameters
+        ----------
+        top_n_features : int, default=10
+            特征重要性对比的 Top-N 特征数。
+
+        Returns
+        -------
+        str
+            Markdown 格式报告字符串。
+        """
+        self._check_is_fitted()
+
+        sections = []
+        sections.append(self._format_overview())
+        sections.append(self._format_results_table())
+        if self.oot is not None:
+            sections.append(self._format_decay_analysis())
+        sections.append(self._format_feature_importance_comparison(top_n_features))
+        sections.append(self._format_feature_stability(top_n_features))
+        sections.append(self._format_hyperparameter_comparison())
+        sections.append(self._format_best_experiment())
+
+        return "\n\n".join(sections)
+
+    # ------------------------------------------------------------------
+    # show 辅助方法
+    # ------------------------------------------------------------------
+
+    def _extract_feature_importance(self, estimator) -> dict | None:
+        """从已拟合的估计器中提取特征重要性。
+
+        支持三种路径：
+        1. RiskXGBClassifier.feature_importance() — 风控 XGBoost
+        2. sklearn 通用 feature_importances_ + feature_names_in_
+        3. Pipeline 递归到最后一步
+
+        Returns
+        -------
+        dict[str, float] | None
+            特征名 → 重要性值，无法提取时返回 None。
+        """
+        # Pipeline：取最后一步
+        clf = estimator
+        if hasattr(estimator, "steps"):
+            clf = estimator.steps[-1][1]
+
+        # RiskXGBClassifier.feature_importance()
+        if hasattr(clf, "feature_importance"):
+            return clf.feature_importance(importance_type="gain")
+
+        # sklearn 通用 feature_importances_ + feature_names_in_
+        if hasattr(clf, "feature_importances_") and hasattr(clf, "feature_names_in_"):
+            return dict(zip(clf.feature_names_in_, clf.feature_importances_))
+
+        # 仅有 feature_importances_（无特征名，用序号）
+        if hasattr(clf, "feature_importances_"):
+            return {f"feature_{i}": v for i, v in enumerate(clf.feature_importances_)}
+
+        return None
+
+    def _format_overview(self) -> str:
+        """§1 实验概览"""
+        total = len(self.experiments_)
+        succeeded = sum(1 for r in self.experiments_.values() if r.status == "success")
+        failed = total - succeeded
+
+        lines = [
+            "## 实验概览",
+            "",
+            f"- 总实验数: **{total}** (成功 {succeeded}, 失败 {failed})",
+            f"- 最优实验: **{self.best_config_.name}** (按 `{self.scoring}` 选举)",
+        ]
+        if failed > 0:
+            failed_names = [
+                n for n, r in self.experiments_.items() if r.status == "failed"
+            ]
+            lines.append(f"- 失败实验: {', '.join(failed_names)}")
+
+        return "\n".join(lines)
+
+    def _format_results_table(self) -> str:
+        """§2 指标对比表（拆分为：实验配置 / 训练集指标 / OOT指标 / 额外标签）"""
+        df = self.results_.copy()
+
+        # ---- 识别各列类别 ----
+        base_cols = ["name", "label_col", "time_window", "weight_col"]
+        sample_cols = ["n_samples", "default_rate", "n_features", "mean_iv"]
+
+        # 训练集指标列：排除已知非指标列
+        _known_non_metric = set(base_cols + sample_cols + [
+            "status", "error", "best_trial_score", "training_time",
+        ])
+        # OOT 指标列
+        oot_prefix_cols = [c for c in df.columns if c.startswith("oot_")]
+        # 额外标签列：含标签名_指标名的（如 is_high_risk_auc）
+        extra_label_cols = [c for c in df.columns
+                           if c not in _known_non_metric
+                           and c not in oot_prefix_cols
+                           and not c.startswith("oot_")
+                           and "_" in c  # 非标准指标名（如 is_high_risk_auc）
+                           and c not in {"lift_10"}]  # lift_10 含下划线但不是额外标签
+        # 训练集标准指标列
+        train_metric_cols = [c for c in df.columns
+                            if c not in _known_non_metric
+                            and c not in oot_prefix_cols
+                            and c not in extra_label_cols]
+
+        sections = []
+
+        # ---- 子表1: 实验配置与样本 ----
+        cfg_cols = [c for c in base_cols + sample_cols if c in df.columns]
+        if cfg_cols:
+            sections.append("### 实验配置与样本\n\n" + self._render_md_table(df[cfg_cols], int_cols={"n_samples"}))
+
+        # ---- 子表2: 训练集指标 ----
+        if train_metric_cols:
+            show_cols = ["name"] + train_metric_cols
+            sections.append("### 训练集指标\n\n" + self._render_md_table(df[show_cols]))
+
+        # ---- 子表3: OOT 指标 ----
+        if oot_prefix_cols:
+            show_cols = ["name"] + oot_prefix_cols
+            sections.append("### OOT 指标\n\n" + self._render_md_table(df[show_cols], int_cols={"oot_n_samples"}))
+
+        # ---- 子表4: 额外标签指标 ----
+        if extra_label_cols:
+            show_cols = ["name"] + extra_label_cols
+            sections.append("### 额外标签指标\n\n" + self._render_md_table(df[show_cols]))
+
+        # ---- 子表5: 训练耗时 ----
+        if "training_time" in df.columns:
+            show_cols = ["name", "training_time"]
+            df_time = df[show_cols].copy()
+            df_time["training_time"] = df_time["training_time"].apply(
+                lambda x: f"{x:.1f}s" if pd.notna(x) else "-"
+            )
+            sections.append("### 训练耗时\n\n" + self._render_md_table(df_time))
+
+        return "## 指标对比表\n\n" + "\n\n".join(sections)
+
+    @staticmethod
+    def _render_md_table(df: pd.DataFrame, int_cols: set | None = None) -> str:
+        """将 DataFrame 渲染为 Markdown 表格，自动格式化数值。"""
+        int_cols = int_cols or set()
+        df = df.copy()
+
+        # 整数列（千分位）
+        int_like_cols = int_cols | {"n_features"}
+        # 简洁浮点列（4位小数）
+        float4_cols = {"default_rate", "mean_iv", "oot_default_rate"}
+
+        for col in df.columns:
+            if col in int_like_cols:
+                df[col] = df[col].apply(lambda x: f"{int(x):,}" if pd.notna(x) else "-")
+            else:
+                # 按元素判断：数值型格式化，非数值型保持原样
+                df[col] = df[col].apply(
+                    lambda x: f"{x:.4f}" if isinstance(x, (int, float)) and pd.notna(x) else x
+                )
+
+        headers = list(df.columns)
+        lines = [
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        for _, row in df.iterrows():
+            lines.append("| " + " | ".join(str(row[h]) for h in headers) + " |")
+        return "\n".join(lines)
+
+    def _format_decay_analysis(self) -> str:
+        """§3 训练集 → OOT 指标衰减分析"""
+        lines = [
+            "## 训练集 → OOT 指标衰减分析",
+            "",
+        ]
+
+        # 找出同时有 train 和 oot 的指标
+        metrics = self.metrics if self.metrics is not None else DEFAULT_METRICS
+        decay_pairs = []
+        for m in metrics:
+            train_col = m.name
+            oot_col = f"oot_{m.name}"
+            if train_col in self.results_.columns and oot_col in self.results_.columns:
+                decay_pairs.append((m.name, train_col, oot_col))
+
+        if not decay_pairs:
+            lines.append("*无训练集与 OOT 同时存在的指标*")
+            return "\n".join(lines)
+
+        # 表头
+        header_parts = ["实验"]
+        for metric_name, _, _ in decay_pairs:
+            header_parts.extend([f"{metric_name}(训练)", f"{metric_name}(OOT)", f"{metric_name}(衰减)"])
+        lines.append("| " + " | ".join(header_parts) + " |")
+        lines.append("| " + " | ".join("---" for _ in header_parts) + " |")
+
+        for _, row in self.results_.iterrows():
+            if row.get("status") == "failed":
+                continue
+            parts = [str(row["name"])]
+            for metric_name, train_col, oot_col in decay_pairs:
+                train_val = row.get(train_col, np.nan)
+                oot_val = row.get(oot_col, np.nan)
+                if pd.notna(train_val) and pd.notna(oot_val) and train_val > 0:
+                    decay = (train_val - oot_val) / train_val * 100
+                    signal = f"{decay:+.1f}%"
+                    if decay > 20:
+                        signal += " ⚠️"
+                    parts.extend([f"{train_val:.4f}", f"{oot_val:.4f}", signal])
+                else:
+                    parts.extend(["-", "-", "-"])
+            lines.append("| " + " | ".join(parts) + " |")
+
+        return "\n".join(lines)
+
+    def _format_feature_importance_comparison(self, top_n: int) -> str:
+        """§4 Top-N 特征重要性对比"""
+        # 提取各实验的特征重要性
+        exp_importance = {}
+        for name, result in self.experiments_.items():
+            if result.status != "success" or result.estimator is None:
+                continue
+            imp = self._extract_feature_importance(result.estimator)
+            if imp:
+                exp_importance[name] = imp
+
+        if not exp_importance:
+            return "## Top-N 特征重要性对比\n\n*无可提取的特征重要性数据*"
+
+        # 各实验取 Top-N 并归一化
+        exp_topn = {}
+        for name, imp in exp_importance.items():
+            sorted_feats = sorted(imp.items(), key=lambda x: x[1], reverse=True)
+            top_feats = sorted_feats[:top_n]
+            total = sum(v for _, v in top_feats)
+            if total > 0:
+                exp_topn[name] = {f: v / total * 100 for f, v in top_feats}
+            else:
+                exp_topn[name] = {f: 0.0 for f, v in top_feats}
+
+        # 取所有实验 Top-N 特征的并集
+        all_features = set()
+        for topn in exp_topn.values():
+            all_features.update(topn.keys())
+
+        # 按平均排名排序
+        feature_avg_rank = {}
+        for feat in all_features:
+            ranks = []
+            for name, topn in exp_topn.items():
+                if feat in topn:
+                    sorted_feats = sorted(topn.keys(), key=lambda f: topn[f], reverse=True)
+                    ranks.append(sorted_feats.index(feat) + 1)
+                else:
+                    ranks.append(top_n + 1)  # 未入选的排后面
+            feature_avg_rank[feat] = np.mean(ranks)
+
+        sorted_features = sorted(feature_avg_rank.keys(), key=lambda f: feature_avg_rank[f])
+
+        # 构建表格
+        exp_names = list(exp_topn.keys())
+        headers = ["特征"] + exp_names
+        lines = [
+            "## Top-N 特征重要性对比",
+            "",
+            f"*各实验 Top-{top_n} 特征重要性（归一化百分比）*",
+            "",
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        for feat in sorted_features:
+            row_parts = [feat]
+            for name in exp_names:
+                val = exp_topn[name].get(feat)
+                row_parts.append(f"{val:.1f}%" if val is not None else "-")
+            lines.append("| " + " | ".join(row_parts) + " |")
+
+        return "\n".join(lines)
+
+    def _format_feature_stability(self, top_n: int) -> str:
+        """§5 特征稳定性分析"""
+        # 复用特征重要性数据
+        exp_importance = {}
+        for name, result in self.experiments_.items():
+            if result.status != "success" or result.estimator is None:
+                continue
+            imp = self._extract_feature_importance(result.estimator)
+            if imp:
+                exp_importance[name] = imp
+
+        if not exp_importance:
+            return ""
+
+        n_experiments = len(exp_importance)
+
+        # 各实验 Top-N 特征
+        exp_topn_sets = {}
+        for name, imp in exp_importance.items():
+            sorted_feats = sorted(imp.items(), key=lambda x: x[1], reverse=True)
+            exp_topn_sets[name] = set(f for f, _ in sorted_feats[:top_n])
+
+        # 统计每个特征在多少个实验中入选 Top-N
+        all_features = set()
+        for s in exp_topn_sets.values():
+            all_features.update(s)
+
+        feature_counts = {}
+        for feat in all_features:
+            count = sum(1 for s in exp_topn_sets.values() if feat in s)
+            feature_counts[feat] = count
+
+        # 按稳定性排序
+        sorted_feats = sorted(feature_counts.items(), key=lambda x: (-x[1], x[0]))
+
+        # 特征组合差异分析
+        feature_sets = {}
+        for name, result in self.experiments_.items():
+            if result.status != "success" or result.estimator is None:
+                continue
+            # 从 estimator.feature_names_in_ 获取实际使用的特征
+            if hasattr(result.estimator, "feature_names_in_"):
+                feature_sets[name] = set(result.estimator.feature_names_in_)
+            elif hasattr(result.estimator, "steps"):
+                for _, step in reversed(result.estimator.steps):
+                    if hasattr(step, "feature_names_in_"):
+                        feature_sets[name] = set(step.feature_names_in_)
+                        break
+
+        lines = [
+            "## 特征稳定性分析",
+            "",
+            f"| 特征 | 入选实验数 | 稳定性 ({n_experiments} 实验) |",
+            "| --- | --- | --- |",
+        ]
+        for feat, count in sorted_feats:
+            stability = f"{count}/{n_experiments}"
+            bar = "█" * count + "░" * (n_experiments - count)
+            lines.append(f"| {feat} | {count} | {stability} {bar} |")
+
+        # 特征组合差异（仅多特征组实验时）
+        if len(feature_sets) > 1:
+            all_used = set()
+            for s in feature_sets.values():
+                all_used.update(s)
+            common = set.intersection(*feature_sets.values()) if feature_sets else set()
+            unique = {}
+            for name, s in feature_sets.items():
+                diff = s - common
+                if diff:
+                    unique[name] = diff
+
+            if unique or len(common) < len(all_used):
+                lines.append("")
+                lines.append("### 特征组合差异")
+                lines.append("")
+                lines.append(f"- 共有特征: {len(common)} 个")
+                if common:
+                    lines.append(f"  {', '.join(sorted(common))}")
+                for name, diff in unique.items():
+                    lines.append(f"- {name} 独有特征: {len(diff)} 个")
+                    if diff:
+                        lines.append(f"  {', '.join(sorted(diff))}")
+
+        return "\n".join(lines)
+
+    def _format_hyperparameter_comparison(self) -> str:
+        """§6 最优超参数对比"""
+        # 收集所有实验的 best_params
+        all_params = {}
+        for name, result in self.experiments_.items():
+            if result.status != "success" or result.best_params is None:
+                continue
+            all_params[name] = result.best_params
+
+        if not all_params:
+            return "## 最优超参数对比\n\n*无可提取的超参数*"
+
+        # 收集所有参数名
+        param_names = set()
+        for params in all_params.values():
+            param_names.update(params.keys())
+        param_names = sorted(param_names)
+
+        # 去掉 step 前缀（Pipeline 参数如 classifier__max_depth → max_depth）
+        display_names = {}
+        for p in param_names:
+            if "__" in p:
+                display_names[p] = p.split("__", 1)[1]
+            else:
+                display_names[p] = p
+
+        exp_names = list(all_params.keys())
+        headers = ["参数"] + exp_names
+        lines = [
+            "## 最优超参数对比",
+            "",
+            "| " + " | ".join(headers) + " |",
+            "| " + " | ".join("---" for _ in headers) + " |",
+        ]
+        for p in param_names:
+            row_parts = [display_names[p]]
+            for name in exp_names:
+                val = all_params[name].get(p, "-")
+                # 格式化数值
+                if isinstance(val, float):
+                    row_parts.append(f"{val:.4f}")
+                elif isinstance(val, int):
+                    row_parts.append(str(val))
+                else:
+                    row_parts.append(str(val))
+            lines.append("| " + " | ".join(row_parts) + " |")
+
+        return "\n".join(lines)
+
+    def _format_best_experiment(self) -> str:
+        """§7 最优实验详情"""
+        best_name = self.best_config_.name
+        best_result = self.experiments_[best_name]
+
+        lines = [
+            "## 最优实验详情",
+            "",
+            f"| 项目 | 值 |",
+            f"| --- | --- |",
+            f"| 实验名 | {best_name} |",
+            f"| 标签列 | {best_result.config.label_col} |",
+        ]
+        if best_result.config.time_window:
+            lines.append(f"| 时间窗口 | {best_result.config.time_window} |")
+        if best_result.config.weight_col:
+            lines.append(f"| 样本权重 | {best_result.config.weight_col} |")
+        lines.append(f"| 训练样本数 | {best_result.n_samples:,} |")
+        lines.append(f"| 正样本率 | {best_result.default_rate:.4f} |")
+        lines.append(f"| 入模特征数 | {best_result.n_features} |")
+        lines.append(f"| 平均 IV | {best_result.mean_iv:.4f} |")
+
+        # 训练集指标
+        for metric_name, val in best_result.metric_values.items():
+            lines.append(f"| 训练集 {metric_name} | {val:.4f} |")
+
+        # OOT 指标
+        for metric_name, val in best_result.oot_metric_values.items():
+            lines.append(f"| OOT {metric_name} | {val:.4f} |")
+
+        # Top-10 特征重要性
+        imp = self._extract_feature_importance(best_result.estimator)
+        if imp:
+            sorted_imp = sorted(imp.items(), key=lambda x: x[1], reverse=True)[:10]
+            total_imp = sum(v for _, v in sorted_imp)
+            lines.append("")
+            lines.append("### Top-10 特征重要性")
+            lines.append("")
+            lines.append("| 特征 | 重要性 | 占比 |")
+            lines.append("| --- | --- | --- |")
+            for feat, val in sorted_imp:
+                pct = val / total_imp * 100 if total_imp > 0 else 0
+                lines.append(f"| {feat} | {val:.4f} | {pct:.1f}% |")
+
+        # 最优超参数
+        if best_result.best_params:
+            lines.append("")
+            lines.append("### 最优超参数")
+            lines.append("")
+            for p, v in best_result.best_params.items():
+                display_p = p.split("__", 1)[1] if "__" in p else p
+                if isinstance(v, float):
+                    lines.append(f"- **{display_p}**: {v:.4f}")
+                else:
+                    lines.append(f"- **{display_p}**: {v}")
+
+        return "\n".join(lines)

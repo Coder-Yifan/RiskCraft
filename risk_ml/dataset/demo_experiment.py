@@ -129,7 +129,7 @@ print("[3] 实验配置")
 print("=" * 70)
 
 tw_2024 = TimeWindow("transaction_time", "2024-01-01", "2024-12-31")
-tw_2025 = TimeWindow("transaction_time", "2025-01-01", "2025-12-31")
+tw_2025 = TimeWindow("transaction_time", "2024-01-01", "2025-12-31")
 
 configs = [
     # 基线：全量训练数据，等权
@@ -183,87 +183,26 @@ runner = ExperimentRunner(
 )
 
 runner.fit(df_train)
+print(runner.show())
 
-# ============================================================
-# 6. 展示结果
-# ============================================================
-print("\n" + "=" * 70)
-print("[5] 训练集 vs OOT 对比结果")
-print("=" * 70)
+# # ============================================================
+# # 6. 展示结果（Markdown 报告）
+# # ============================================================
+# print("\n" + "=" * 70)
+# print("[5] 实验结果 Markdown 报告")
+# print("=" * 70)
 
-# 选择关键列
-display_cols = [
-    "name", "label_col", "time_window", "weight_col",
-    "n_samples", "default_rate",
-    "auc", "ks", "lift_10", "gini",
-    "oot_n_samples", "oot_default_rate",
-    "oot_auc", "oot_ks", "oot_lift_10", "oot_gini",
-    "is_high_risk_auc", "is_high_risk_ks",
-    "oot_is_high_risk_auc", "oot_is_high_risk_ks",
-    "training_time",
-]
-# 只展示存在的列
-avail_cols = [c for c in display_cols if c in runner.results_.columns]
+# report = runner.show(top_n_features=10)
+# print(report)
 
-results = runner.results_[avail_cols].copy()
+# # 最优模型在 OOT 上的预测示例
+# print("\n最优模型 OOT 前 10 笔预测示例:")
+# X_oot_sample = df_oot[feature_cols].head(10)
+# scores = runner.predict_score(X_oot_sample)
+# for i, s in enumerate(scores):
+#     label = "欺诈" if df_oot["is_fraud"].iloc[i] == 1 else "正常"
+#     print(f"  样本{i+1}: 预测概率={s:.4f}, 实际={label}")
 
-# 格式化
-float_cols = [c for c in results.columns if c not in
-              ["name", "label_col", "time_window", "weight_col"]]
-for col in float_cols:
-    results[col] = results[col].apply(
-        lambda x: f"{x:.4f}" if pd.notna(x) and isinstance(x, (int, float)) else (
-            f"{x:,}" if isinstance(x, (int, np.integer)) else x
-        )
-    )
-# 单独格式化 n_samples
-for col in ["n_samples", "oot_n_samples"]:
-    if col in results.columns:
-        results[col] = results[col].apply(
-            lambda x: f"{int(float(x.replace(',', ''))):,}" if isinstance(x, str) else f"{x:,}"
-        )
-
-print(results.to_string(index=False))
-
-# ============================================================
-# 7. 训练集 vs OOT 指标衰减分析
-# ============================================================
-print("\n" + "=" * 70)
-print("[6] 训练集 → OOT 指标衰减分析")
-print("=" * 70)
-
-for _, row in runner.results_.iterrows():
-    name = row["name"]
-    train_ks = row.get("ks", np.nan)
-    oot_ks = row.get("oot_ks", np.nan)
-    train_auc = row.get("auc", np.nan)
-    oot_auc = row.get("oot_auc", np.nan)
-
-    if pd.notna(train_ks) and pd.notna(oot_ks):
-        ks_decay = (train_ks - oot_ks) / train_ks * 100
-        auc_decay = (train_auc - oot_auc) / train_auc * 100
-        print(f"  {name:20s}  KS: {train_ks:.4f} → {oot_ks:.4f} (衰减 {ks_decay:+.1f}%)  "
-              f"AUC: {train_auc:.4f} → {oot_auc:.4f} (衰减 {auc_decay:+.1f}%)")
-
-# ============================================================
-# 8. 最优实验（基于 OOT KS）
-# ============================================================
-print("\n" + "=" * 70)
-print("[7] 最优实验（基于 OOT KS 选举）")
-print("=" * 70)
-
-print(f"实验名:  {runner.best_config_.name}")
-print(f"标签列:  {runner.best_config_.label_col}")
-print(f"OOT KS:  {runner.best_score_:.4f}")
-
-# 最优模型在 OOT 上的预测示例
-print("\n最优模型 OOT 前 10 笔预测示例:")
-X_oot_sample = df_oot[feature_cols].head(10)
-scores = runner.predict_score(X_oot_sample)
-for i, s in enumerate(scores):
-    label = "欺诈" if df_oot["is_fraud"].iloc[i] == 1 else "正常"
-    print(f"  样本{i+1}: 预测概率={s:.4f}, 实际={label}")
-
-print("\n" + "=" * 70)
-print("[完成] 实验模块演示结束")
-print("=" * 70)
+# print("\n" + "=" * 70)
+# print("[完成] 实验模块演示结束")
+# print("=" * 70)
