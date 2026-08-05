@@ -2,18 +2,27 @@
   "permissions": {
     "allow": [
       "Bash(pip install *)",
-      "Bash(python -m pytest tests/test_feature_derivative.py -v)",
-      "Bash(python demo.py)",
-      "Bash(python -m pytest tests/test_feature_derivative.py -v --tb=short -W ignore::DeprecationWarning)",
-      "Bash(gh auth *)",
-      "Bash(where gh *)",
-      "Bash(where git *)",
+      "Bash(D:/softwares/conda/python.exe *)",
+      "Bash(python *)",
+      "Bash(git *)",
+      "Bash(curl -s *)",
+      "Bash(mkdir *)",
+      "Bash(ls *)",
+      "Bash(cat *)",
+      "Bash(find *)",
+      "Bash(where *)",
+      "Bash(which *)",
       "Bash(winget install *)",
       "Bash(conda install *)",
-      "Bash(git config *)",
-      "Bash(git credential-manager *)",
-      "Bash(git init *)",
-      "Bash(git add *)"
+      "WebSearch",
+      "Glob",
+      "Grep",
+      "Read",
+      "Bash(node 'C:\\\\Users\\\\Administrator\\\\.claude\\\\plugins\\\\cache\\\\tokmizer\\\\tokmizer\\\\0.9.32\\\\dist\\\\bin\\\\tkr-exec.js' head -60)",
+      "Bash(node *)",
+      "Skill(update-config)"
     ]
-  }
+  },
+  "autoCompactEnabled": true,
+  "autoCompactWindow": 200000
 }

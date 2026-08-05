@@ -281,7 +281,7 @@ context = ReportContext(
     background="针对线上交易欺诈风险，使用更多历史数据训练，构建反欺诈预测模型",
     application="线上交易实时风控筛查，辅助人工审核决策",
     label_definition={0: "正常", 1: "欺诈"},
-    observation_period="6个月",
+    # observation_period="6个月",
     feature_meta=feature_meta,
 )
 
