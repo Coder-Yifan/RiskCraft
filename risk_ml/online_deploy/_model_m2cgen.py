@@ -14,34 +14,25 @@ m2cgen 官方生成器用 float64 比较树阈值，而 xgboost 内部用 float3
 生成代码为纯标准库 Python（仅 math），零依赖，可内嵌字符串。
 """
 
-import json
-import math
-import struct
-
 import numpy as np
 
 from ._base import json_safe
+from ._tree_model import TreeModel, f32
+
+# 兼容旧引用（如 risk_ml.tests.test_deploy 直接导入 _f32）
+_f32 = f32
 
 
-def _f32(x):
-    """float64 → float32 舍入后还原为 float64（值精确等于 float32）。"""
-    return struct.unpack("f", struct.pack("f", float(x)))[0]
-
-
-def transpile(booster, base_prob, feature_names):
-    """将 booster 转译为 float32 修正版纯 Python score(input) 函数。
+def transpile(tree_model):
+    """将归一化 TreeModel 转译为 float32 修正版纯 Python score(input) 函数。
 
     Args:
-        booster: xgboost.Booster
-        base_prob: 模型 base_score（概率）
-        feature_names: 特征名列表（顺序与模型输入一致）
+        tree_model: _tree_model.TreeModel（阈值/叶子已按框架 float32 量化）
 
     Returns:
         可直接 exec 的 Python 源码字符串
     """
-    feat_idx = {n: i for i, n in enumerate(feature_names)}
-    trees = json.loads("[" + ",".join(booster.get_dump(dump_format="json")) + "]")
-    base_margin = _f32(math.log(float(base_prob) / (1 - float(base_prob))))
+    base_margin = tree_model.base_margin
 
     lines = [
         "import math",
@@ -57,19 +48,17 @@ def transpile(booster, base_prob, feature_names):
 
     def gen_tree(node, out_var, indent):
         pad = "    " * indent
-        if "leaf" in node:
-            return [f"{pad}{out_var} = {_f32(node['leaf'])!r}"]
-        f = feat_idx[node["split"]]
-        t = _f32(node["split_condition"])
-        yes, no = node["children"]  # xgboost JSON: children[0] = yes 分支
-        out = [f"{pad}if input[{f}] < {t!r}:"]
-        out += gen_tree(yes, out_var, indent + 1)
+        if node["is_leaf"]:
+            return [f"{pad}{out_var} = {node['leaf']!r}"]
+        op = "<=" if node["mode"] == "LE" else "<"
+        out = [f"{pad}if input[{node['feature']}] {op} {node['threshold']!r}:"]
+        out += gen_tree(node["left"], out_var, indent + 1)
         out += [f"{pad}else:"]
-        out += gen_tree(no, out_var, indent + 1)
+        out += gen_tree(node["right"], out_var, indent + 1)
         return out
 
     var_names = []
-    for ti, tree in enumerate(trees):
+    for ti, tree in enumerate(tree_model.trees):
         v = f"var{ti}"
         var_names.append(v)
         lines += gen_tree(tree, v, 1)
@@ -97,8 +86,13 @@ class M2CgenBackend:
 
     @classmethod
     def from_booster(cls, booster, feature_names, base_score):
-        code = transpile(booster, base_score, feature_names)
-        return cls(code, feature_names, base_score)
+        tree_model = TreeModel.from_xgb_booster(booster, feature_names, base_score)
+        return cls.from_tree_model(tree_model)
+
+    @classmethod
+    def from_tree_model(cls, tree_model):
+        code = transpile(tree_model)
+        return cls(code, tree_model.feature_names, tree_model.base_prob)
 
     def score(self, X):
         """批量打分，X 形状 (n, f) → 正例概率 (n,)。

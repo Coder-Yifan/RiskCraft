@@ -15,6 +15,7 @@ import math
 import numpy as np
 
 from ._base import json_safe
+from ._tree_model import TreeModel
 
 
 def logit(p):
@@ -23,26 +24,36 @@ def logit(p):
     return math.log(p / (1.0 - p))
 
 
-def build_onnx_model(booster, base_prob, feature_names, target_opset=17):
-    """从 booster 构建 ONNX 图：float32[N,F] → TreeEnsemble(margin) → Sigmoid → prob。"""
+def build_onnx_model(tree_model, target_opset=17):
+    """从归一化 TreeModel 构建 ONNX 图：float32[N,F] → TreeEnsemble(margin) → Sigmoid → prob。"""
     from onnx import helper, TensorProto
 
-    feat_idx = {n: i for i, n in enumerate(feature_names)}
-    trees = json.loads("[" + ",".join(booster.get_dump(dump_format="json")) + "]")
+    feature_names = tree_model.feature_names
+    base_prob = tree_model.base_prob
 
     treeids, nodeids, featids, modes, values = [], [], [], [], []
     truenodeids, falsenodeids, missing_true = [], [], []
     t_treeids, t_nodeids, t_weights = [], [], []
 
-    for ti, tree in enumerate(trees):
-        stack = [tree]
-        while stack:
-            node = stack.pop()
-            nid = node["nodeid"]
+    for ti, tree in enumerate(tree_model.trees):
+        # 两遍法：先前序收集节点（列表索引即节点 id），再统一填充数组，
+        # 保证 nodes_* 各数组按同一顺序对齐（父节点先于子节点，id 前序）。
+        order = []
+
+        def collect(node):
+            order.append(node)
+            if not node["is_leaf"]:
+                collect(node["left"])
+                collect(node["right"])
+
+        collect(tree)
+        idx = {id(node): nid for nid, node in enumerate(order)}
+
+        for nid, node in enumerate(order):
             # 所有节点(内部+叶子)都要出现在 nodes_* 数组, 叶子用 LEAF mode
             treeids.append(ti)
             nodeids.append(nid)
-            if "leaf" in node:
+            if node["is_leaf"]:
                 featids.append(0)
                 modes.append("LEAF")
                 values.append(0.0)
@@ -53,13 +64,12 @@ def build_onnx_model(booster, base_prob, feature_names, target_opset=17):
                 t_nodeids.append(nid)
                 t_weights.append(float(node["leaf"]))
                 continue
-            featids.append(feat_idx[node["split"]])
-            modes.append("BRANCH_LT")  # value < threshold -> true(yes), 与 xgboost 一致
-            values.append(float(node["split_condition"]))
-            truenodeids.append(node["yes"])
-            falsenodeids.append(node["no"])
-            missing_true.append(node["missing"] == node["yes"])
-            stack.extend(node["children"])
+            featids.append(node["feature"])
+            modes.append("BRANCH_LEQ" if node["mode"] == "LE" else "BRANCH_LT")
+            values.append(float(node["threshold"]))
+            truenodeids.append(idx[id(node["left"])])
+            falsenodeids.append(idx[id(node["right"])])
+            missing_true.append(bool(node["missing_left"]))
 
     tree_ensemble = helper.make_node(
         "TreeEnsembleRegressor",
@@ -85,7 +95,7 @@ def build_onnx_model(booster, base_prob, feature_names, target_opset=17):
     sigmoid = helper.make_node("Sigmoid", inputs=["margin"], outputs=["prob"])
     graph = helper.make_graph(
         [tree_ensemble, sigmoid],
-        "xgb",
+        "tree_model",
         [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, len(feature_names)])],
         [helper.make_tensor_value_info("prob", TensorProto.FLOAT, [None, 1])],
     )
@@ -115,8 +125,13 @@ class OnnxBackend:
     # ------------------------------------------------------------------
     @classmethod
     def from_booster(cls, booster, feature_names, base_score, opset=17):
-        model = build_onnx_model(booster, base_score, feature_names, target_opset=opset)
-        return cls(model.SerializeToString(), feature_names, base_score)
+        tree_model = TreeModel.from_xgb_booster(booster, feature_names, base_score)
+        return cls.from_tree_model(tree_model, opset=opset)
+
+    @classmethod
+    def from_tree_model(cls, tree_model, opset=17):
+        model = build_onnx_model(tree_model, target_opset=opset)
+        return cls(model.SerializeToString(), tree_model.feature_names, tree_model.base_prob)
 
     # ------------------------------------------------------------------
     # 打分

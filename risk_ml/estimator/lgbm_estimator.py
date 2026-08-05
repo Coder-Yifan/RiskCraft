@@ -1,42 +1,45 @@
 """
-风控 XGBoost 分类器 — RiskXGBClassifier
+风控 LightGBM 分类器 — RiskLGBMClassifier
 
-对 xgboost.XGBClassifier 的风控场景封装：
-- 默认参数面向信贷风控场景调优（scale_pos_weight、max_depth 等）
+对 lightgbm.LGBMClassifier 的风控场景封装，与 RiskXGBClassifier 对齐：
+- 同一套风控默认参数（scale_pos_weight、learning_rate、正则等）
 - 自动记录训练时的特征名
-- 提供 predict_score() 方法直接返回正例概率
+- predict_score() 直接返回正例概率
+- to_deploy_model() 返回归一化 TreeModel（LGB 概率 = sigmoid(Σleaf)，
+  base_margin = 0；数值分裂 decision_type "<=" → LE 模式）
 - 完全兼容 sklearn 接口（fit / predict / predict_proba / get_params / set_params）
 """
 
-import json
-
+import numpy as np
 import pandas as pd
+from lightgbm import LGBMClassifier
 from sklearn.utils.validation import check_is_fitted
-from xgboost import XGBClassifier
 
 from .base_estimator import RiskEstimator
 
 
-class RiskXGBClassifier(RiskEstimator):
+class RiskLGBMClassifier(RiskEstimator):
     """
-    风控场景 XGBoost 二分类器。
+    风控场景 LightGBM 二分类器。
 
-    在 XGBClassifier 基础上提供风控默认参数和便捷接口，
+    在 LGBMClassifier 基础上提供风控默认参数和便捷接口，
     完全兼容 sklearn 生态（Pipeline、GridSearchCV 等）。
 
     Parameters
     ----------
     n_estimators : int, default=200
         提升轮数。
-    max_depth : int, default=4
-        树最大深度。风控场景建议 3~5，避免过拟合。
+    num_leaves : int, default=31
+        叶子数上限。
+    max_depth : int, default=-1
+        树最大深度（-1 表示不限）。
     learning_rate : float, default=0.05
         学习率。风控场景常用 0.01~0.1。
     scale_pos_weight : float, default=1
         正负样本权重比。风控场景正例极少，可设为
         ``neg_count / pos_count`` 以平衡样本。
-    min_child_weight : float, default=5
-        子节点最小权重和。风控场景建议偏大，增强泛化。
+    min_child_samples : int, default=20
+        叶子最小样本数。风控场景建议偏大，增强泛化。
     subsample : float, default=0.8
         行采样比例。
     colsample_bytree : float, default=0.8
@@ -47,18 +50,14 @@ class RiskXGBClassifier(RiskEstimator):
         L2 正则化系数。
     random_state : int or None, default=42
         随机种子。
-    eval_metric : str, default="auc"
-        评估指标。
-    tree_method : str, default="hist"
-        树构建算法。
     n_jobs : int, default=-1
         并行线程数。
-    **xgb_kwargs : dict
-        传递给 XGBClassifier 的其他参数。
+    **lgb_kwargs : dict
+        传递给 LGBMClassifier 的其他参数。
 
     Example
     -------
-    >>> clf = RiskXGBClassifier(scale_pos_weight=10)
+    >>> clf = RiskLGBMClassifier(scale_pos_weight=10)
     >>> clf.fit(X_train, y_train)
     >>> y_score = clf.predict_score(X_test)
     """
@@ -66,49 +65,46 @@ class RiskXGBClassifier(RiskEstimator):
     def __init__(
         self,
         n_estimators=200,
-        max_depth=4,
+        num_leaves=31,
+        max_depth=-1,
         learning_rate=0.05,
         scale_pos_weight=1,
-        min_child_weight=5,
+        min_child_samples=20,
         subsample=0.8,
         colsample_bytree=0.8,
         reg_alpha=0.1,
         reg_lambda=1.0,
         random_state=42,
-        eval_metric="auc",
-        tree_method="hist",
         n_jobs=-1,
-        **xgb_kwargs,
+        **lgb_kwargs,
     ):
         self.n_estimators = n_estimators
+        self.num_leaves = num_leaves
         self.max_depth = max_depth
         self.learning_rate = learning_rate
         self.scale_pos_weight = scale_pos_weight
-        self.min_child_weight = min_child_weight
+        self.min_child_samples = min_child_samples
         self.subsample = subsample
         self.colsample_bytree = colsample_bytree
         self.reg_alpha = reg_alpha
         self.reg_lambda = reg_lambda
         self.random_state = random_state
-        self.eval_metric = eval_metric
-        self.tree_method = tree_method
         self.n_jobs = n_jobs
-        self.xgb_kwargs = xgb_kwargs
+        self.lgb_kwargs = lgb_kwargs
 
-    def _build_xgb(self):
-        """根据当前参数构建 XGBClassifier 实例。"""
+    def _build_lgb(self):
+        """根据当前参数构建 LGBMClassifier 实例。"""
         params = self.get_params()
-        # 移除非 XGBClassifier 原生参数
-        params.pop("xgb_kwargs", None)
-        params.update(self.xgb_kwargs)
-        return XGBClassifier(**params)
+        params.pop("lgb_kwargs", None)
+        params.update(self.lgb_kwargs)
+        return LGBMClassifier(**params)
 
     def fit(self, X, y, **fit_kwargs):
         """
-        拟合 XGBoost 分类器。
+        拟合 LightGBM 分类器。
 
         当输入为 pandas DataFrame 时，自动将 object 类型列转换为
-        category 类型，以兼容 XGBoost 原生分类特征支持。
+        category 类型，以兼容 LightGBM 原生分类特征支持。
 
         Parameters
         ----------
@@ -117,30 +113,22 @@ class RiskXGBClassifier(RiskEstimator):
         y : array-like
             目标变量（0/1 二分类）。
         **fit_kwargs : dict
-            传递给 XGBClassifier.fit() 的额外参数，
-            如 eval_set、early_stopping_rounds 等。
+            传递给 LGBMClassifier.fit() 的额外参数，
+            如 eval_set、callbacks 等。
 
         Returns
         -------
         self
         """
-        # 记录特征名
-        if isinstance(X, pd.DataFrame):
-            self.feature_names_in_ = X.columns.tolist()
-            self.n_features_in_ = X.shape[1]
-            # 自动将 object 列转为 category，启用 XGBoost 原生分类支持
-            cat_cols = X.select_dtypes(include=["object"]).columns.tolist()
-            if cat_cols:
-                X = X.copy()
-                for col in cat_cols:
-                    X[col] = X[col].astype("category")
-                self._has_categorical_ = True
-            else:
-                self._has_categorical_ = False
+        cat_cols = self._set_feature_meta(X)
+        if cat_cols:
+            X = X.copy()
+            for col in cat_cols:
+                X[col] = X[col].astype("category")
 
-        self.model_ = self._build_xgb()
-        if getattr(self, "_has_categorical_", False):
-            self.model_.set_params(enable_categorical=True)
+        self.model_ = self._build_lgb()
+        if cat_cols:
+            self.model_.set_params(categorical_feature=cat_cols)
         self.model_.fit(X, y, **fit_kwargs)
 
         # 暴露 classes_ 属性以兼容 sklearn
@@ -159,21 +147,15 @@ class RiskXGBClassifier(RiskEstimator):
         """
         返回归一化 TreeModel（供在线部署双后端使用）。
 
-        base_score（概率先验）从 booster save_config 提取，
-        阈值/叶子按 float32 语义舍入，base_margin = f32(logit(base_prob))。
+        与 XGBoost 不同：LGB 概率 = sigmoid(Σleaf)，无 base 偏移
+        （base_margin = 0）；阈值 float32 舍入、叶子 double 全精度。
         """
         from risk_ml.online_deploy._tree_model import TreeModel
 
         check_is_fitted(self, "model_")
-        booster = self.model_.get_booster()
-        try:
-            cfg = json.loads(booster.save_config())
-            base_score = float(cfg["learner"]["learner_model_param"]["base_score"])
-        except (KeyError, TypeError, ValueError) as e:
-            raise ValueError(f"无法从 booster 提取 base_score: {e}")
-
-        feature_names = self._deploy_feature_names(booster.feature_names)
-        return TreeModel.from_xgb_booster(booster, feature_names, base_score)
+        booster = self.model_.booster_
+        feature_names = self._deploy_feature_names(booster.feature_name())
+        return TreeModel.from_lgb_booster(booster, feature_names)
 
     def feature_importance(self, importance_type="gain"):
         """
@@ -182,7 +164,7 @@ class RiskXGBClassifier(RiskEstimator):
         Parameters
         ----------
         importance_type : str, default="gain"
-            重要性类型，可选 "weight"/"gain"/"cover"/"total_gain"/"total_cover"。
+            重要性类型，可选 "split"/"gain"。
 
         Returns
         -------
@@ -190,10 +172,11 @@ class RiskXGBClassifier(RiskEstimator):
             特征名 → 重要性值的字典。
         """
         check_is_fitted(self, "model_")
-        booster = self.model_.get_booster()
-        raw = booster.get_score(importance_type=importance_type)
+        booster = self.model_.booster_
+        vals = np.asarray(booster.feature_importance(importance_type=importance_type))
+        names = booster.feature_name()
+        raw = dict(zip(names, vals.tolist()))
         if hasattr(self, "feature_names_in_"):
             # 补全未出现的特征（重要性为 0）
             return {f: raw.get(f, 0.0) for f in self.feature_names_in_}
         return raw
-

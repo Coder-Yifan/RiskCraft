@@ -117,7 +117,7 @@ sklearn 兼容的风控建模算子工具链，提供特征清洗、分箱、WOE
 ```
 Raw Features → FeatureCleaner → ChiMergeBinner → WoeEncoder
              → IVSelector → CorrelationSelector → PSISelector
-             → RiskXGBClassifier
+             → RiskXGBClassifier / RiskLGBMClassifier
 ```
 
 ### 模块说明
@@ -128,13 +128,21 @@ Raw Features → FeatureCleaner → ChiMergeBinner → WoeEncoder
 | **分箱** | `ChiMergeBinner` | 卡方分箱（自底向上合并），支持分类特征 |
 | **编码** | `WoeEncoder` / `BinnerWoeEncoder` | WOE 编码，BinnerWoeEncoder 一步到位 |
 | **特征筛选** | `IVSelector` / `CorrelationSelector` / `PSISelector` | IV 筛选、相关性去冗余、PSI 稳定性筛选 |
-| **估计器** | `RiskXGBClassifier` / `OptunaTuner` | 风控 XGBoost + Optuna 贝叶斯调参 |
+| **估计器** | `RiskXGBClassifier` / `RiskLGBMClassifier` / `OptunaTuner` | 风控 XGB / LGB + Optuna 贝叶斯调参 |
 | **数据集** | `LendingClubLoader` | Lending Club 贷款数据集自动加载 |
 | **实验模块** | `ExperimentRunner` | 多配置实验对比 + OOT 验证 + 多标签评估 |
 
 ### 基类体系
 
-所有算子继承自 sklearn 兼容基类：
+所有算子继承自 sklearn 兼容基类。四类部署模块的基类即**在线扩展契约**，
+新增子类（自定义分箱 / 编码 / 筛选 / 估计器）后在线部署零改动即可编译上线：
+
+| 模块 | 基类（子类需实现） | 部署产物 |
+|------|--------------------|----------|
+| 分箱 | `BaseBinner`（`_bin_column`） | `BinOp` |
+| 编码 | `BaseEncoder`（`fit` 产出 `woe_map_`） | `WoeOp` / `BinWoeOp` |
+| 筛选 | `RiskSelector`（`_get_support_mask`） | `SelectOp` |
+| 估计器 | `RiskEstimator`（`to_deploy_model` → TreeModel） | 树模型后端（m2cgen / onnx，xgb / lgb） |
 
 - **`RiskTransformer`** — 转换器基类（fit / transform），DataFrame-in/DataFrame-out
 - **`RiskSelector`** — 筛选器基类（fit / transform + `_get_support_mask`）
@@ -275,7 +283,7 @@ RiskCraft/
 │   ├── binning/                 # 分箱（BaseBinner / ChiMergeBinner）
 │   ├── encoding/                # WOE 编码（WoeEncoder / BinnerWoeEncoder）
 │   ├── feature_selection/       # 特征筛选（IV / Correlation / PSI）
-│   ├── estimator/               # 估计器（RiskXGBClassifier / OptunaTuner）
+│   ├── estimator/               # 估计器（RiskXGBClassifier / RiskLGBMClassifier / OptunaTuner）
 │   ├── dataset/                 # 数据集（LendingClubLoader / demo_data.csv）
 │   ├── experiment/              # 实验模块（ExperimentRunner / BaseMetric）
 │   │   ├── metrics.py           # 指标基类 & 内置指标（AUC / KS / Lift）

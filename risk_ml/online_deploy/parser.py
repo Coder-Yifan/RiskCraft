@@ -3,7 +3,7 @@ PipelineParser — 将已拟合的 sklearn pipeline 编译为在线部署流水�
 
 编译过程：
 1. 遍历 pipeline 步骤，将每个 transformer 映射为纯 numpy 部署算子
-2. 将最终估计器（RiskXGBClassifier）映射为 xgb 后端（onnx / m2cgen）
+2. 将最终估计器（RiskEstimator → to_deploy_model）映射为树模型后端（onnx / m2cgen，xgb / lgb 共用）
 3. 记录输入列，供 score(dict) / score_batch 使用
 
 序列化：
@@ -141,7 +141,7 @@ class PipelineParser:
     Parameters
     ----------
     backend : str, default="m2cgen"
-        xgb 模型后端，可选：
+        树模型后端（xgb / lgb 共用 TreeModel），可选：
         - "m2cgen": 纯 Python 转译，单条 ~10us，零依赖
         - "onnx":   ONNX Runtime，单条 ~16us，跨语言可复用
     """
@@ -211,52 +211,46 @@ class PipelineParser:
         # 内置算子（按继承优先级从子类到基类）
         from ..binning import ChiMergeBinner
         from ..binning.base_binner import BaseBinner
-        from ..encoding import BinnerWoeEncoder, WoeEncoder
+        from ..encoding import BaseEncoder
         from ..preprocessing import FeatureCleaner
-        from ..feature_selection import IVSelector, CorrelationSelector
+        from .._base import RiskSelector
 
         if isinstance(step, FeatureCleaner):
             return CleanerOp.from_step(step, columns, name)
-        if isinstance(step, BinnerWoeEncoder):
-            return BinWoeOp.from_step(step, columns, name)
         if isinstance(step, ChiMergeBinner):
             return BinOp.from_step(step, columns, name)
         if isinstance(step, BaseBinner):
             return BinOp.from_step(step, columns, name)
-        if isinstance(step, WoeEncoder):
+        if isinstance(step, BaseEncoder):
+            if hasattr(step, "binner_"):  # 内嵌分箱 → 分箱+编码联合算子
+                return BinWoeOp.from_step(step, columns, name)
             return WoeOp.from_step(step, columns, name)
-        if isinstance(step, (IVSelector, CorrelationSelector)):
+        if isinstance(step, RiskSelector):
             return SelectOp.from_step(step, columns, name)
         return None
 
     def _build_model(self, step, columns):
-        """将 RiskXGBClassifier 编译为 xgb 后端。"""
-        model = getattr(step, "model_", None)
-        if model is None:
-            raise UnsupportedStepError(
-                f"最终估计器 {type(step).__name__} 不支持部署："
-                "仅支持 risk_ml.estimator.RiskXGBClassifier"
-            )
+        """将 RiskEstimator 编译为树模型后端（m2cgen / onnx）。"""
         if getattr(step, "_has_categorical_", False):
             raise UnsupportedStepError(
                 "模型训练时包含分类特征（category 列），ONNX/m2cgen 后端"
                 "仅支持数值特征，请先对分类特征做数值编码"
             )
 
-        booster = model.get_booster()
-        try:
-            cfg = json.loads(booster.save_config())
-            base_score = float(cfg["learner"]["learner_model_param"]["base_score"])
-        except (KeyError, TypeError, ValueError) as e:
-            raise DeployError(f"无法从 booster 提取 base_score: {e}")
+        to_deploy = getattr(step, "to_deploy_model", None)
+        if to_deploy is None:
+            raise UnsupportedStepError(
+                f"最终估计器 {type(step).__name__} 不支持部署："
+                "仅支持继承 risk_ml.estimator.RiskEstimator 的估计器"
+            )
+        tree_model = to_deploy()
 
-        feature_names = list(getattr(step, "feature_names_in_", None)
-                             or columns or booster.feature_names or [])
+        feature_names = tree_model.feature_names
         if set(feature_names) != set(columns):
             raise UnsupportedStepError(
                 f"模型输入列 {feature_names} 与上游输出列 {columns} 不一致"
             )
 
         if self.backend == "onnx":
-            return OnnxBackend.from_booster(booster, feature_names, base_score)
-        return M2CgenBackend.from_booster(booster, feature_names, base_score)
+            return OnnxBackend.from_tree_model(tree_model)
+        return M2CgenBackend.from_tree_model(tree_model)

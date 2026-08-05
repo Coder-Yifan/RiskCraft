@@ -7,7 +7,8 @@ sklearn 兼容的风险建模算子工具链，提供特征清洗、分箱、WOE
 
 典型流水线:
     Raw Features → FeatureCleaner → ChiMergeBinner → WoeEncoder
-                 → IVSelector → CorrelationSelector → RiskXGBClassifier
+                 → IVSelector → CorrelationSelector
+                 → RiskXGBClassifier / RiskLGBMClassifier
 
 快速开始:
     from risk_ml import RiskXGBClassifier
@@ -22,7 +23,7 @@ from .preprocessing import FeatureCleaner
 from .binning import ChiMergeBinner
 from .encoding import WoeEncoder, BinnerWoeEncoder
 from .feature_selection import IVSelector, CorrelationSelector, PSISelector
-from .estimator import RiskXGBClassifier, OptunaTuner
+from .estimator import RiskEstimator, RiskXGBClassifier, RiskLGBMClassifier, OptunaTuner
 from .dataset import LendingClubLoader
 from .experiment import (
     TimeWindow,
@@ -64,7 +65,9 @@ __all__ = [
     "IVSelector",
     "CorrelationSelector",
     "PSISelector",
+    "RiskEstimator",
     "RiskXGBClassifier",
+    "RiskLGBMClassifier",
     "OptunaTuner",
     "LendingClubLoader",
     "TimeWindow",

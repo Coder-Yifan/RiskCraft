@@ -13,11 +13,12 @@ WOE (Weight of Evidence) 是风控领域核心编码方法：
 import numpy as np
 import pandas as pd
 
-from .._base import RiskTransformer, validate_dataframe
+from .._base import validate_dataframe
 from ..binning import ChiMergeBinner
+from .base_encoder import BaseEncoder
 
 
-class WoeEncoder(RiskTransformer):
+class WoeEncoder(BaseEncoder):
     """
     WOE 编码算子：将分箱结果转换为 WOE 值。
 
@@ -94,56 +95,8 @@ class WoeEncoder(RiskTransformer):
 
         return self
 
-    def transform(self, X):
-        """
-        将箱索引替换为 WOE 值。
 
-        Args:
-            X: pandas DataFrame
-
-        Returns:
-            WOE 编码后的 DataFrame（浮点值）
-        """
-        validate_dataframe(X)
-
-        # 如有 binner，先分箱
-        if self.binner is not None:
-            X = self.binner.transform(X)
-
-        X_out = pd.DataFrame(index=X.index)
-
-        for col in X.columns:
-            if col not in self.woe_map_:
-                raise ValueError(f"列 '{col}' 未在 fit 时训练")
-            woe_map = self.woe_map_[col]
-            X_out[col] = X[col].map(woe_map)
-
-        return X_out
-
-    def get_woe_table(self, feature):
-        """
-        获取指定特征的 WOE 明细表。
-
-        Args:
-            feature: 特征名
-
-        Returns:
-            DataFrame，包含 bin_index, woe, iv_contribution 等列
-        """
-        if feature not in self.woe_map_:
-            raise ValueError(f"特征 '{feature}' 未训练")
-
-        rows = []
-        woe_map = self.woe_map_[feature]
-        for bin_idx, woe_val in sorted(woe_map.items()):
-            rows.append({
-                "bin_index": bin_idx,
-                "woe": woe_val,
-            })
-        return pd.DataFrame(rows)
-
-
-class BinnerWoeEncoder(RiskTransformer):
+class BinnerWoeEncoder(BaseEncoder):
     """
     分箱+WOE 联合算子：便捷的一步到位方案。
 
@@ -236,24 +189,6 @@ class BinnerWoeEncoder(RiskTransformer):
 
         return self
 
-    def transform(self, X):
-        """
-        先分箱再 WOE 编码。
-
-        Args:
-            X: pandas DataFrame（原始值）
-
-        Returns:
-            WOE 编码后的 DataFrame
-        """
-        validate_dataframe(X)
-        X_binned = self.binner_.transform(X)
-        return self.encoder_.transform(X_binned)
-
     def get_bin_table(self, feature):
         """获取分箱汇总表（透传 binner）"""
         return self.binner_.get_bin_table(feature)
-
-    def get_woe_table(self, feature):
-        """获取 WOE 明细表（透传 encoder）"""
-        return self.encoder_.get_woe_table(feature)
