@@ -41,6 +41,8 @@ numba>=0.60.0
 # proto 部署规格 runtime——executor（实时/Spark 打分）必需，本仓库已生成
 # deploy_spec_pb2.py，gencode major=6，要求相同 major 的 protobuf runtime
 protobuf>=6.31.1,<7
-# 可选：onnx / onnxruntime（onnx 后端打分用；m2cgen 后端零依赖，默认推荐）
+# onnx 后端打分用（m2cgen 后端零依赖，两者二选一；onnx 跨语言，m2cgen 默认推荐）
+onnx==1.22.0
+onnxruntime==1.28.0
 # feature_derivative 表达式部署（transpile + DeriveOp）零新增依赖：
 # 转译仅用 stdlib ast + numpy，feature_derivative 为仓内包，均在上述依赖内
