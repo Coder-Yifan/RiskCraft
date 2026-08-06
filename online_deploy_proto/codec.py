@@ -23,7 +23,14 @@ from .exceptions import SerializationError
 from risk_ml.online_deploy._base import DeployOp
 from risk_ml.online_deploy._model_m2cgen import M2CgenBackend
 from risk_ml.online_deploy._model_onnx import OnnxBackend
-from risk_ml.online_deploy._ops import BinOp, BinWoeOp, CleanerOp, SelectOp, WoeOp
+from risk_ml.online_deploy._ops import (
+    BinOp,
+    BinWoeOp,
+    CleanerOp,
+    DeriveOp,
+    SelectOp,
+    WoeOp,
+)
 
 
 # ======================================================================
@@ -94,6 +101,14 @@ def _bin_woe_to_proto(op, m):
     _cat_map_to_entries(op.cat_maps)(m.bin_woe.cat_maps)
 
 
+def _derive_to_proto(op, m):
+    for target, source, variables in op.expressions:
+        e = m.derive.expr.add()
+        e.target = target
+        e.source = source
+        e.variables.extend(variables)
+
+
 def _raw_to_proto(op, m):
     codec = _PROTO_OP_CODECS.get(op.kind)
     if codec is None:
@@ -123,6 +138,8 @@ def op_to_proto(op):
         _bin_woe_to_proto(op, m)
     elif kind == SelectOp.kind:
         m.select.SetInParent()  # 空消息置位，保证 WhichOneof 返回 "select"
+    elif kind == DeriveOp.kind:
+        _derive_to_proto(op, m)
     else:
         _raw_to_proto(op, m)
     return m
@@ -164,6 +181,14 @@ def _bin_woe_from_msg(m, name, in_cols, out_cols):
     return BinWoeOp(name, in_cols, out_cols, edges, woe_maps, cat_maps)
 
 
+def _derive_from_msg(m, name, in_cols, out_cols):
+    expressions = [
+        (e.target, e.source, list(e.variables))
+        for e in m.derive.expr
+    ]
+    return DeriveOp(name, in_cols, out_cols, expressions)
+
+
 def proto_to_op(m):
     """proto Op 消息 → DeployOp。"""
     name = m.name
@@ -180,6 +205,8 @@ def proto_to_op(m):
         return _bin_woe_from_msg(m, name, in_cols, out_cols)
     if which == "select":
         return SelectOp(name, in_cols, out_cols)
+    if which == "derive":
+        return _derive_from_msg(m, name, in_cols, out_cols)
     if which == "raw":
         codec = _PROTO_OP_CODECS.get(m.raw.kind)
         if codec is None:

@@ -10,6 +10,7 @@ fillna ↔ np.where、map ↔ 查表），保证单条打分与 sklearn pipeline
 - WoeEncoder          → WoeOp
 - BinnerWoeEncoder    → BinWoeOp
 - IVSelector / CorrelationSelector → SelectOp
+- FeatureDerivativeTransformer → DeriveOp（feature_derivative 表达式，增列算子）
 
 注意：部署仅支持数值特征 pipeline；字符串分类特征需预先编码为数值。
 """
@@ -351,3 +352,72 @@ class SelectOp(DeployOp):
     def transform(self, X):
         idx = [self._input_idx[c] for c in self.output_columns]
         return np.asarray(X, dtype=np.float64)[:, idx]
+
+
+# ======================================================================
+# DeriveOp — FeatureDerivativeTransformer
+# ======================================================================
+# 转译源码 → 可调用函数的缓存（按源码去重，lazy exec，同 M2CgenEngine 模式）。
+# ⚠️ 与 online_deploy_proto/_kernels.py 的 _DERIVE_FNS 对称，改动必须同步，
+# 由 test_scorer_parity 锁死两侧一致。
+_DERIVE_FNS = {}
+
+
+def _get_derive_fn(source):
+    """exec 转译源码并缓存（命名空间只给 np，白名单表达式安全）。"""
+    fn = _DERIVE_FNS.get(source)
+    if fn is None:
+        ns = {}
+        exec(source, {"np": np}, ns)  # 定义 _fd(X)
+        fn = ns["_fd"]
+        _DERIVE_FNS[source] = fn
+    return fn
+
+
+class DeriveOp(DeployOp):
+    """特征衍生：表达式求值，返回原列 + 衍生列（部署链第一个增列算子）。"""
+
+    kind = "derive"
+
+    def __init__(self, name, input_columns, output_columns, expressions):
+        super().__init__(name, input_columns, output_columns)
+        self.expressions = expressions  # [(target, source, variables)]
+
+    @classmethod
+    def from_step(cls, step, input_columns, name=""):
+        expressions = []
+        for spec in step.expression_specs_:
+            missing = [v for v in spec.variables if v not in input_columns]
+            if missing:
+                raise UnsupportedStepError(
+                    f"[{name or 'derive'}] 衍生表达式 {spec.expression!r} 的变量 "
+                    f"{missing} 不在当前列 {list(input_columns)} 中"
+                    "（上游步骤可能已删列，部署要求表达式变量全程存在）"
+                )
+            expressions.append((spec.target, spec.source, list(spec.variables)))
+        output = list(input_columns) + [s.target for s in step.expression_specs_]
+        return cls(name or "derive", input_columns, output, expressions)
+
+    def transform(self, X):
+        X = np.asarray(X, dtype=np.float64)
+        derived = []
+        for _target, source, variables in self.expressions:
+            sub = X[:, [self._input_idx[v] for v in variables]]
+            derived.append(_get_derive_fn(source)(sub))
+        return np.column_stack([X] + derived)
+
+    def to_dict(self):
+        d = super().to_dict()
+        d.update({"expressions": [
+            {"target": t, "source": s, "variables": list(v)}
+            for t, s, v in self.expressions
+        ]})
+        return d
+
+    @classmethod
+    def from_dict(cls, d):
+        expressions = [
+            (e["target"], e["source"], list(e.get("variables", [])))
+            for e in d["expressions"]
+        ]
+        return cls(d["name"], d["input_columns"], d["output_columns"], expressions)

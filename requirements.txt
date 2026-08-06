@@ -42,3 +42,5 @@ numba>=0.60.0
 # deploy_spec_pb2.py，gencode major=6，要求相同 major 的 protobuf runtime
 protobuf>=6.31.1,<7
 # 可选：onnx / onnxruntime（onnx 后端打分用；m2cgen 后端零依赖，默认推荐）
+# feature_derivative 表达式部署（transpile + DeriveOp）零新增依赖：
+# 转译仅用 stdlib ast + numpy，feature_derivative 为仓内包，均在上述依赖内

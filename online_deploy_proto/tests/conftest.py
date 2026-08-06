@@ -6,7 +6,7 @@ from risk_ml import RiskPipeline
 from risk_ml.encoding import BinnerWoeEncoder
 from risk_ml.estimator import RiskXGBClassifier
 from risk_ml.feature_selection import CorrelationSelector, IVSelector
-from risk_ml.preprocessing import FeatureCleaner
+from risk_ml.preprocessing import FeatureCleaner, FeatureDerivativeTransformer
 from risk_ml.online_deploy import PipelineParser
 from risk_ml.online_deploy.demo_deploy import make_data
 
@@ -34,6 +34,26 @@ def trained():
 def deploy(request, trained):
     pipe, _, _ = trained
     return PipelineParser(backend=request.param).compile_pipeline(pipe)
+
+
+@pytest.fixture(scope="module")
+def derive_trained():
+    """含 feature_derivative 步骤的全链路 pipeline（衍生→清洗→分箱WOE→筛选→XGB）。"""
+    df = make_data(n=400, seed=11)
+    X = df.drop(columns=["y"])
+    y = df["y"]
+    pipe = RiskPipeline([
+        ("fd", FeatureDerivativeTransformer({
+            "ratio_income": "amount/income",
+            "income_1k": "income/1000",
+        })),
+        ("cleaner", FeatureCleaner(sentinels=[-999])),
+        ("binner_woe", BinnerWoeEncoder(max_bins=6)),
+        ("iv_selector", IVSelector(iv_threshold=0.02)),
+        ("xgb", RiskXGBClassifier(n_estimators=20, max_depth=3, eval_metric="auc")),
+    ])
+    pipe.fit(X, y)
+    return pipe, X, y
 
 
 @pytest.fixture(scope="module")

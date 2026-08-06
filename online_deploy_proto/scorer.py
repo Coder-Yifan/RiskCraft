@@ -20,13 +20,14 @@ from ._kernels import (
     kernel_bin,
     kernel_bin_woe,
     kernel_cleaner,
+    kernel_derive,
     kernel_select,
     kernel_woe,
 )
 from ._model import M2CgenEngine, OnnxEngine
 from .exceptions import ScoringError
 
-__version__ = "0.1.0"
+__version__ = "0.2.0"
 
 # ======================================================================
 # 版本门控（语义化版本比较）
@@ -131,6 +132,9 @@ class ProtoScorer:
             return lambda X: kernel_bin_woe(X, input_idx, out, edges, woe_maps, cat)
         if which == "select":
             return lambda X: kernel_select(X, input_idx, out)
+        if which == "derive":
+            expr = [(e.target, e.source, list(e.variables)) for e in op.derive.expr]
+            return lambda X: kernel_derive(X, input_idx, out, expr)
         if which == "raw":
             raw = op.raw
             builder = _RAW_KERNELS.get(raw.kind)

@@ -150,3 +150,37 @@ def kernel_select(X, input_idx, output_columns):
     """特征筛选：按保留列取子集。"""
     idx = [input_idx[c] for c in output_columns]
     return np.asarray(X, dtype=np.float64)[:, idx]
+
+
+# ======================================================================
+# DeriveOp 内核（对照 _ops.py:362-395）
+# ======================================================================
+# 转译源码 → 可调用函数缓存（与 risk_ml/online_deploy/_ops.py 的 _DERIVE_FNS
+# 对称，改动必须同步，由 test_scorer_parity 锁死两侧一致）。
+_DERIVE_FNS = {}
+
+
+def _get_derive_fn(source):
+    """exec 转译源码并缓存（命名空间只给 np，白名单表达式安全）。"""
+    fn = _DERIVE_FNS.get(source)
+    if fn is None:
+        ns = {}
+        exec(source, {"np": np}, ns)  # 定义 _fd(X)
+        fn = ns["_fd"]
+        _DERIVE_FNS[source] = fn
+    return fn
+
+
+def kernel_derive(X, input_idx, output_columns, expressions):
+    """特征衍生：表达式求值，返回原列 + 衍生列。
+
+    expressions: [(target, source, variables)]
+    - variables: 表达式变量，按 input_idx 取变量子数组（局部索引，与转译一致）
+    - source: driver 侧 transpile 转译的 numpy 源码，定义 _fd(X_sub) -> (n,)
+    """
+    X = np.asarray(X, dtype=np.float64)
+    derived = []
+    for _target, source, variables in expressions:
+        sub = X[:, [input_idx[v] for v in variables]]
+        derived.append(_get_derive_fn(source)(sub))
+    return np.column_stack([X] + derived)

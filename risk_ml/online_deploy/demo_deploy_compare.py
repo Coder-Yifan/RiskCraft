@@ -25,7 +25,7 @@ from risk_ml.estimator import RiskLGBMClassifier, RiskXGBClassifier
 from risk_ml.feature_selection import IVSelector
 from risk_ml.online_deploy import PipelineParser
 from risk_ml.online_deploy.demo_deploy import make_data
-from risk_ml.preprocessing import FeatureCleaner
+from risk_ml.preprocessing import FeatureCleaner, FeatureDerivativeTransformer
 from online_deploy_proto import build_engine
 from online_deploy_proto.serialize import to_proto_bytes
 
@@ -47,6 +47,20 @@ def _build_pipe(model_cls, X, y):
     ]).fit(X, y)
 
 
+def _build_pipe_fd(model_cls, X, y):
+    """含 feature_derivative 的 pipeline：特征衍生 → 清洗 → 分箱WOE → 筛选 → 模型。"""
+    return RiskPipeline([
+        ("fd", FeatureDerivativeTransformer({
+            "amount_income_ratio": "amount/income",
+            "income_1k": "income/1000",
+        })),
+        ("cleaner", FeatureCleaner(sentinels=[-999])),
+        ("bin_woe", BinnerWoeEncoder(max_bins=6)),
+        ("select", IVSelector(iv_threshold=0.02)),
+        ("model", model_cls(n_estimators=100, max_depth=4)),
+    ]).fit(X, y)
+
+
 def _bench(fn, n):
     """循环 n 次执行 fn，返回平均单次耗时（us/条）。"""
     t0 = time.perf_counter()
@@ -56,14 +70,14 @@ def _bench(fn, n):
     return dt / n * 1e6
 
 
-def run_case(name, model_cls, X, y):
+def run_case(name, model_cls, X, y, build_pipe=_build_pipe):
     print()
     print("=" * 62)
     print(f"案例: {name} pipeline")
     print("=" * 62)
 
     # ---- 1. 训练 + 编译双后端 ----
-    pipe = _build_pipe(model_cls, X, y)
+    pipe = build_pipe(model_cls, X, y)
     print(f"保留特征: {pipe[:-1].transform(X).shape[1]} 个")
     deploy_m2cgen = PipelineParser(backend="m2cgen").compile_pipeline(pipe)
     deploy_onnx = PipelineParser(backend="onnx").compile_pipeline(pipe)
@@ -139,6 +153,8 @@ def main():
     results = {}
     results["xgb"] = run_case("xgb", RiskXGBClassifier, X, y)
     results["lgb"] = run_case("lgb", RiskLGBMClassifier, X, y)
+    results["xgb_fd"] = run_case("xgb_fd", RiskXGBClassifier, X, y,
+                                 build_pipe=_build_pipe_fd)
 
     # ---- 汇总表 ----
     print()

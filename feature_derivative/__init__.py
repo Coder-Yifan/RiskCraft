@@ -30,6 +30,7 @@ from .exceptions import (
 )
 from .parser import extract_variables, validate_ast_safety
 from .strategies import PandasStrategy, SparkStrategy, OnlineStrategy
+from .transpile import compile_numpy_fn, to_numpy_source
 
 # 全局上下文实例（单例，无需重复创建）
 _context = FeatureDerivativeContext()
@@ -72,4 +73,6 @@ __all__ = [
     "UnsafeExpressionError",
     "extract_variables",
     "validate_ast_safety",
+    "to_numpy_source",
+    "compile_numpy_fn",
 ]

@@ -18,7 +18,7 @@ import numpy as np
 from ._base import DeployOp, json_dumps, json_safe
 from ._model_m2cgen import M2CgenBackend
 from ._model_onnx import OnnxBackend
-from ._ops import BinOp, BinWoeOp, CleanerOp, SelectOp, WoeOp
+from ._ops import BinOp, BinWoeOp, CleanerOp, DeriveOp, SelectOp, WoeOp
 from .exceptions import DeployError, UnsupportedStepError
 from .registry import build_deploy_op
 
@@ -29,6 +29,7 @@ _OP_CLASSES = {
     WoeOp.kind: WoeOp,
     BinWoeOp.kind: BinWoeOp,
     SelectOp.kind: SelectOp,
+    DeriveOp.kind: DeriveOp,
 }
 # 模型后端类型 → 反序列化类
 _MODEL_CLASSES = {
@@ -212,11 +213,13 @@ class PipelineParser:
         from ..binning import ChiMergeBinner
         from ..binning.base_binner import BaseBinner
         from ..encoding import BaseEncoder
-        from ..preprocessing import FeatureCleaner
+        from ..preprocessing import FeatureCleaner, FeatureDerivativeTransformer
         from .._base import RiskSelector
 
         if isinstance(step, FeatureCleaner):
             return CleanerOp.from_step(step, columns, name)
+        if isinstance(step, FeatureDerivativeTransformer):
+            return DeriveOp.from_step(step, columns, name)
         if isinstance(step, ChiMergeBinner):
             return BinOp.from_step(step, columns, name)
         if isinstance(step, BaseBinner):

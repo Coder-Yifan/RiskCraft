@@ -9,7 +9,7 @@ import json
 import numpy as np
 import pytest
 
-from risk_ml.online_deploy import assert_consistent
+from risk_ml.online_deploy import PipelineParser, assert_consistent
 from risk_ml.online_deploy.checker import generate_test_rows
 
 from online_deploy_proto import ProtoScorer, build_engine, register_scorer_kernel
@@ -79,6 +79,30 @@ def _raw_spec_bytes(kind, params=None, feature="a"):
     m.base_score = 0.5
     m.code = "def score(input):\n    return 0.5"
     return s.SerializeToString()
+
+
+# ======================================================================
+# DeriveOp（feature_derivative）parity：kernel_derive == DeployOp.transform
+# ======================================================================
+class TestDeriveParity:
+    """含 feature_derivative 步骤时，scorer 内核与 DeployPipeline 逐位一致。"""
+
+    @pytest.mark.parametrize("backend", ["m2cgen", "onnx"])
+    def test_derive_scorer_matches_deploy(self, derive_trained, backend):
+        pipe, X, _ = derive_trained
+        deploy = PipelineParser(backend=backend).compile_pipeline(pipe)
+        scorer = build_engine(to_proto_bytes(deploy))
+        rows = generate_test_rows(pipe, X, n_random=200)
+        p_deploy = deploy.score_batch(rows)
+        p_scorer = scorer.score_rows(rows)
+        assert np.abs(p_deploy - p_scorer).max() < 1e-9
+
+    def test_derive_assert_consistent(self, derive_trained):
+        pipe, X, _ = derive_trained
+        spec = to_proto_bytes(PipelineParser(backend="m2cgen").compile_pipeline(pipe))
+        scorer = build_engine(spec)
+        r = assert_consistent(pipe, ScorerAdapter(scorer), X=X, atol=1e-4)
+        assert r["n_fail"] == 0
 
 
 class TestRawKernel:

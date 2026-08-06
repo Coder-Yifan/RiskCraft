@@ -58,7 +58,18 @@ message Op {
     BinWoeOp bin_woe = 7;
     SelectOp select = 8;
     RawOp raw = 9;  // 自定义算子逃生舱
+    DeriveOp derive = 10;  // 特征衍生（表达式转译源码）
   }
+}
+
+message DeriveExpr {
+  string target = 1;             // 衍生列名（output_columns 的衍生部分）
+  string source = 2;             // numpy 转译源码（exec 后 _fd(X)，含 fill_value 语义）
+  repeated string variables = 3; // 表达式变量，kernel 按 input_idx 取变量子数组
+}
+
+message DeriveOp {
+  repeated DeriveExpr expr = 1;
 }
 
 message CleanerOp {

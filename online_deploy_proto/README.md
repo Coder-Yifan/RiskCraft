@@ -103,7 +103,7 @@ spark-submit \
 | 版本演进 | 无 | 字段编号 + `min_scorer_version` 语义门控 |
 | 体积 | onnx 需 base64 | 免 base64，onnx 后端约省 30% |
 | 幂等/缓存 | 不保证 | proto3 map 排序 → 字节确定性 |
-| 自定义算子 | `_OP_CLASSES` 写死 5 类，JSON 往返挂 | RawOp 逃生舱（driver codec + executor kernel 双注册） |
+| 自定义算子 | `_OP_CLASSES` 写死 6 类，JSON 往返挂 | RawOp 逃生舱（driver codec + executor kernel 双注册） |
 
 ## 版本演进（字段编号）
 

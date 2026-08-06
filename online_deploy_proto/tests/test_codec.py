@@ -10,9 +10,9 @@ import json
 import numpy as np
 import pytest
 
-from risk_ml.online_deploy import assert_consistent
+from risk_ml.online_deploy import PipelineParser, assert_consistent
 from risk_ml.online_deploy._base import DeployOp
-from risk_ml.online_deploy._ops import BinOp, CleanerOp
+from risk_ml.online_deploy._ops import BinOp, CleanerOp, DeriveOp
 
 from online_deploy_proto import deploy_spec_pb2 as pb
 from online_deploy_proto.codec import op_to_proto, proto_to_op, register_proto_op
@@ -106,6 +106,55 @@ class TestVersionGates:
         from online_deploy_proto import build_engine
         with pytest.raises(DeploySpecError):
             build_engine(data)
+
+
+# ======================================================================
+# DeriveOp — feature_derivative 衍生算子
+# ======================================================================
+class TestDeriveOp:
+    """衍生算子：proto 往返 + 列增长 + 表达式字段保真。"""
+
+    def test_round_trip(self, derive_trained):
+        pipe, X, _ = derive_trained
+        for backend in ("m2cgen", "onnx"):
+            deploy = PipelineParser(backend=backend).compile_pipeline(pipe)
+            spec = to_proto_bytes(deploy)
+            back = from_proto_bytes(spec)
+            rows = X.iloc[:50].to_dict("records")
+            # 反序列化后打分与原始部署逐位相等
+            assert (back.score_batch(rows) == deploy.score_batch(rows)).all()
+            r = assert_consistent(pipe, back, X=X, atol=1e-4)
+            assert r["n_fail"] == 0
+
+    def test_column_growth_preserved(self, derive_trained):
+        pipe, X, _ = derive_trained
+        deploy = PipelineParser(backend="m2cgen").compile_pipeline(pipe)
+        derive_ops = [op for op in deploy.ops if op.kind == "derive"]
+        assert len(derive_ops) == 1
+        op = derive_ops[0]
+        assert len(op.output_columns) == len(op.input_columns) + 2
+        assert op.output_columns[-2:] == ["ratio_income", "income_1k"]
+
+    def test_expression_fields_round_trip(self):
+        op = DeriveOp("fd", ["a", "b"], ["a", "b", "r"],
+                      [("r", "def _fd(X):\n    return X[:, 0]", ["a"])])
+        back = proto_to_op(op_to_proto(op))
+        assert back.expressions == op.expressions
+        # 转译源码逐字节保留（executor lazy exec 依赖）
+        assert back.expressions[0][1] == op.expressions[0][1]
+
+    def test_derive_spec_carries_version_gate(self, derive_trained):
+        """含 derive 的 spec 必须携带引入 derive 的 min_scorer_version。
+
+        0.2.0 引入 derive：旧 executor（0.1.0）加载时会先被 check_min_scorer_version
+        拦截（明确报错），不会静默跳过未知 op。门控机制本身由 test_min_scorer_version_gate
+        覆盖。
+        """
+        pipe, _, _ = derive_trained
+        deploy = PipelineParser(backend="m2cgen").compile_pipeline(pipe)
+        spec = pb.DeploySpec()
+        spec.ParseFromString(to_proto_bytes(deploy))
+        assert spec.min_scorer_version == "0.2.0"
 
 
 # ======================================================================
