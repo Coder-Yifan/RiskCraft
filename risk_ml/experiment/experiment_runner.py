@@ -198,7 +198,15 @@ class ExperimentRunner(BaseEstimator):
         return self.best_estimator_.predict_proba(X)
 
     def predict_score(self, X):
-        """使用最优估计器预测正例概率（风控评分）。"""
+        """使用最优估计器预测风控评分。
+
+        最优估计器具备 ``predict_score``（如 RiskPipeline 配置评分拉伸算子）时委托之，
+        否则回退正例概率（与估计器口径一致）。
+        """
+        self._check_is_fitted()
+        est = self.best_estimator_
+        if hasattr(est, "predict_score"):
+            return est.predict_score(X)
         return self.predict_proba(X)[:, 1]
 
     # ------------------------------------------------------------------

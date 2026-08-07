@@ -115,7 +115,13 @@ def assert_consistent(pipe, deploy, X=None, atol=1e-4, n_random=200, on_fail=Non
 
     columns = deploy.feature_names_in_
     X_true = pd.DataFrame(rows, columns=columns)
-    y_true = pipe.predict_proba(X_true)[:, 1]
+    if getattr(pipe, "score_scaler", None) is not None:
+        # 拉伸 pipeline：真值 = 风险分（分数域，容差放宽到 1.0）
+        y_true = pipe.predict_score(X_true)
+        atol = max(atol, 1.0)
+    else:
+        # 无拉伸：真值 = 概率，与原逻辑逐值一致（atol=1e-4 不变）
+        y_true = pipe.predict_proba(X_true)[:, 1]
     y_deploy = deploy.score_batch(rows)
 
     diff = np.abs(y_true - y_deploy)

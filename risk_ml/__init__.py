@@ -24,6 +24,7 @@ from .binning import ChiMergeBinner
 from .encoding import WoeEncoder, BinnerWoeEncoder
 from .feature_selection import IVSelector, CorrelationSelector, PSISelector
 from .estimator import RiskEstimator, RiskXGBClassifier, RiskLGBMClassifier, OptunaTuner
+from .scoring import ScoreScaler, LogitScoreScaler, PdoScoreScaler
 from .dataset import LendingClubLoader
 from .experiment import (
     TimeWindow,
@@ -69,6 +70,9 @@ __all__ = [
     "RiskXGBClassifier",
     "RiskLGBMClassifier",
     "OptunaTuner",
+    "ScoreScaler",
+    "LogitScoreScaler",
+    "PdoScoreScaler",
     "LendingClubLoader",
     "TimeWindow",
     "ExperimentConfig",

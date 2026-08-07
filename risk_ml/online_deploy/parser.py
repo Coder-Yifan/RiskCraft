@@ -176,7 +176,9 @@ class PipelineParser:
             is_last = idx == len(steps) - 1
             # 最终估计器：具备 predict_proba 的步骤
             if is_last and hasattr(step, "predict_proba"):
-                model_op = self._build_model(step, columns)
+                # 评分拉伸折叠进模型 margin（score_scaler 由 pipeline 持有）
+                scaler = getattr(pipe, "score_scaler", None)
+                model_op = self._build_model(step, columns, score_scaler=scaler)
                 continue
 
             op = self._build_op(step, columns, name)
@@ -232,8 +234,12 @@ class PipelineParser:
             return SelectOp.from_step(step, columns, name)
         return None
 
-    def _build_model(self, step, columns):
-        """将 RiskEstimator 编译为树模型后端（m2cgen / onnx）。"""
+    def _build_model(self, step, columns, score_scaler=None):
+        """将 RiskEstimator 编译为树模型后端（m2cgen / onnx）。
+
+        score_scaler: ScoreScaler or None，评分拉伸算子。配置后折叠进 margin
+        （score = offset + scale·margin），后端输出风险分而非概率。
+        """
         if getattr(step, "_has_categorical_", False):
             raise UnsupportedStepError(
                 "模型训练时包含分类特征（category 列），ONNX/m2cgen 后端"
@@ -255,5 +261,5 @@ class PipelineParser:
             )
 
         if self.backend == "onnx":
-            return OnnxBackend.from_tree_model(tree_model)
-        return M2CgenBackend.from_tree_model(tree_model)
+            return OnnxBackend.from_tree_model(tree_model, score_scaler=score_scaler)
+        return M2CgenBackend.from_tree_model(tree_model, score_scaler=score_scaler)

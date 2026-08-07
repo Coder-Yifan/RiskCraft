@@ -12,6 +12,7 @@
 from sklearn.pipeline import Pipeline
 from sklearn.base import clone
 from sklearn.utils._user_interface import _print_elapsed_time
+from sklearn.utils.metaestimators import available_if
 
 
 def _route_attributes(steps, fitted_step_idx):
@@ -43,6 +44,12 @@ def _route_attributes(steps, fitted_step_idx):
             step.set_params(iv_values=iv_val)
 
 
+def _has_predict_proba(self):
+    """available_if 保护：最终估计器具备 predict_proba 才暴露 predict_score。"""
+    est = self._final_estimator
+    return est is not None and hasattr(est, "predict_proba")
+
+
 class RiskPipeline(Pipeline):
     """
     控建模流水线：扩展 sklearn Pipeline，支持验证集和属性传递。
@@ -66,6 +73,10 @@ class RiskPipeline(Pipeline):
         同 sklearn Pipeline
     verbose : bool, default=False
         同 sklearn Pipeline
+    score_scaler : ScoreScaler or None, default=None
+        评分拉伸算子（可选）。None 时 ``predict_score`` 等价 ``predict_proba[:, 1]``
+        （正例概率，与估计器口径一致）；配置后返回拉伸后的风险分（如 300-900 分）。
+        在线部署（online_deploy）会自动把该算子折叠进模型 margin，零成本。
 
     Attributes
     ----------
@@ -90,6 +101,44 @@ class RiskPipeline(Pipeline):
     >>> # 有验证集 — PSI 正确计算，OptunaTuner holdout 评估
     >>> pipe.fit(X_train, y_train, X_val=X_val, y_val=y_val)
     """
+
+    def __init__(self, steps, *, memory=None, verbose=False, score_scaler=None):
+        """
+        初始化流水线。
+
+        Parameters
+        ----------
+        steps, memory, verbose :
+            同 sklearn Pipeline。
+        score_scaler : ScoreScaler or None, default=None
+            评分拉伸算子（可选），见类文档。
+        """
+        super().__init__(steps, memory=memory, verbose=verbose)
+        self.score_scaler = score_scaler
+
+    @available_if(_has_predict_proba)
+    def predict_score(self, X):
+        """
+        预测风控评分。
+
+        默认（``score_scaler=None``）等价 ``predict_proba(X)[:, 1]``（正例概率，
+        与估计器 ``predict_score`` 口径一致）；配置评分拉伸算子后返回拉伸后的
+        风险分（如 300-900 分，分数越高风险越低见算子方向约定）。
+
+        Parameters
+        ----------
+        X : pd.DataFrame
+            输入特征。
+
+        Returns
+        -------
+        np.ndarray
+            形状 (n_samples,) 的评分数组。
+        """
+        p = self.predict_proba(X)[:, 1]
+        if self.score_scaler is None:
+            return p
+        return self.score_scaler.transform(p)
 
     def fit(self, X, y=None, X_val=None, y_val=None, **fit_params):
         """

@@ -24,8 +24,13 @@ def logit(p):
     return math.log(p / (1.0 - p))
 
 
-def build_onnx_model(tree_model, target_opset=17):
-    """从归一化 TreeModel 构建 ONNX 图：float32[N,F] → TreeEnsemble(margin) → Sigmoid → prob。"""
+def build_onnx_model(tree_model, target_opset=17, score_scaler=None):
+    """从归一化 TreeModel 构建 ONNX 图。
+
+    默认：float32[N,F] → TreeEnsemble(margin) → Sigmoid → prob。
+    配置评分拉伸算子时：logit(sigmoid(m)) ≡ m，把 affine 直接折叠进图
+    （margin → Mul(scale) → Add(offset) → score），省掉 Sigmoid 的 exp——只快不慢。
+    """
     from onnx import helper, TensorProto
 
     feature_names = tree_model.feature_names
@@ -92,13 +97,32 @@ def build_onnx_model(tree_model, target_opset=17):
         base_values=[logit(base_prob)],  # margin 偏移 = logit(概率)
         post_transform="NONE",
     )
-    sigmoid = helper.make_node("Sigmoid", inputs=["margin"], outputs=["prob"])
-    graph = helper.make_graph(
-        [tree_ensemble, sigmoid],
-        "tree_model",
-        [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, len(feature_names)])],
-        [helper.make_tensor_value_info("prob", TensorProto.FLOAT, [None, 1])],
-    )
+    if score_scaler is None:
+        sigmoid = helper.make_node("Sigmoid", inputs=["margin"], outputs=["prob"])
+        graph = helper.make_graph(
+            [tree_ensemble, sigmoid],
+            "tree_model",
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, len(feature_names)])],
+            [helper.make_tensor_value_info("prob", TensorProto.FLOAT, [None, 1])],
+        )
+    else:
+        # 评分拉伸折叠：score = offset + scale·margin（scale=-factor 分数越高风险越低）
+        scale = -float(score_scaler.factor) if score_scaler.higher_is_safer else float(score_scaler.factor)
+        offset = float(score_scaler.offset)
+        graph = helper.make_graph(
+            [
+                tree_ensemble,
+                helper.make_node("Mul", inputs=["margin", "scale"], outputs=["scaled"]),
+                helper.make_node("Add", inputs=["scaled", "offset"], outputs=["score"]),
+            ],
+            "tree_model",
+            [helper.make_tensor_value_info("input", TensorProto.FLOAT, [None, len(feature_names)])],
+            [helper.make_tensor_value_info("score", TensorProto.FLOAT, [None, 1])],
+            initializer=[
+                helper.make_tensor("scale", TensorProto.FLOAT, [], [scale]),
+                helper.make_tensor("offset", TensorProto.FLOAT, [], [offset]),
+            ],
+        )
     model = helper.make_model(
         graph,
         opset_imports=[helper.make_opsetid("", target_opset), helper.make_opsetid("ai.onnx.ml", 3)],
@@ -114,10 +138,13 @@ class OnnxBackend:
     运行期懒加载 onnxruntime session，单条打分 ~20us。
     """
 
-    def __init__(self, model_bytes, feature_names, base_score):
+    def __init__(self, model_bytes, feature_names, base_score, score_meta=None):
         self.model_bytes = bytes(model_bytes)
         self.feature_names = list(feature_names)
         self.base_score = float(base_score)
+        # 评分拉伸元数据 {offset, factor, higher_is_safer} or None。
+        # 注意不能命名 score——会遮蔽打分方法 score(X)。
+        self.score_meta = score_meta
         self._session = None
 
     # ------------------------------------------------------------------
@@ -129,9 +156,19 @@ class OnnxBackend:
         return cls.from_tree_model(tree_model, opset=opset)
 
     @classmethod
-    def from_tree_model(cls, tree_model, opset=17):
-        model = build_onnx_model(tree_model, target_opset=opset)
-        return cls(model.SerializeToString(), tree_model.feature_names, tree_model.base_prob)
+    def from_tree_model(cls, tree_model, opset=17, score_scaler=None):
+        model = build_onnx_model(tree_model, target_opset=opset, score_scaler=score_scaler)
+        score_meta = None
+        if score_scaler is not None:
+            score_meta = {
+                "offset": float(score_scaler.offset),
+                "factor": float(score_scaler.factor),
+                "higher_is_safer": bool(score_scaler.higher_is_safer),
+            }
+        return cls(
+            model.SerializeToString(), tree_model.feature_names, tree_model.base_prob,
+            score_meta=score_meta,
+        )
 
     # ------------------------------------------------------------------
     # 打分
@@ -153,17 +190,25 @@ class OnnxBackend:
     # 序列化
     # ------------------------------------------------------------------
     def to_dict(self):
-        return {
+        d = {
             "kind": "onnx",
             "feature_names": self.feature_names,
             "base_score": self.base_score,
             "model_bytes_b64": base64.b64encode(self.model_bytes).decode("ascii"),
         }
+        if self.score_meta is not None:
+            d["score"] = self.score_meta
+        return d
 
     @classmethod
     def from_dict(cls, d):
         blob = base64.b64decode(d["model_bytes_b64"])
-        return cls(blob, d["feature_names"], d["base_score"])
+        return cls(blob, d["feature_names"], d["base_score"], score_meta=d.get("score"))
 
     def describe(self):
-        return f"OnnxBackend({len(self.feature_names)} 特征, {len(self.model_bytes)} bytes)"
+        base = f"OnnxBackend({len(self.feature_names)} 特征, {len(self.model_bytes)} bytes)"
+        if self.score_meta is not None:
+            s = self.score_meta
+            sign = "-" if s["higher_is_safer"] else "+"
+            base += f", score_scaler(score={s['offset']:.1f} {sign} {s['factor']:.2f}*logit)"
+        return base

@@ -668,7 +668,7 @@ pipe = RiskPipeline([
 X = df[["age", "income", "balance", "income_per_age"]]
 y = df["is_fraud"]
 pipe.fit(X, y)
-y_score = pipe.predict_proba(X)[:, 1]   # RiskPipeline 无 predict_score，取正例概率
+y_score = pipe.predict_score(X)         # 默认=正例概率；配置 score_scaler 后为拉伸风险分
 
 # ========== 3. 自动产出报告 ==========
 context = ReportContext(

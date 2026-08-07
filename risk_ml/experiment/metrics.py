@@ -135,7 +135,12 @@ class KSMetric(BaseMetric):
         if len(pos_score) == 0 or len(neg_score) == 0:
             return 0.0
 
-        bins = np.linspace(0, 1, 101)
+        # 概率输入保持 [0,1] 分箱（字节不变、零回归）；拉伸评分（非概率，如 300-900）
+        # 按数据范围分箱——KS 对单调变换近似不变，保证拉伸分下 KS 仍正确
+        lo, hi = float(np.min(y_score)), float(np.max(y_score))
+        if lo == hi:
+            return 0.0
+        bins = np.linspace(0, 1, 101) if 0.0 <= lo and hi <= 1.0 else np.linspace(lo, hi, 101)
         pos_hist, _ = np.histogram(pos_score, bins=bins, density=True)
         neg_hist, _ = np.histogram(neg_score, bins=bins, density=True)
 
